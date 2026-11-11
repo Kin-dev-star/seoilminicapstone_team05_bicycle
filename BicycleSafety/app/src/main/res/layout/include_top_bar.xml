@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 상단 바: 경로 설정 버튼 + 음성 알림 토글 (세 화면 공통) -->
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- 상단 바: 경로 설정 + 음성 알림 + 설정 버튼 -->
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:gravity="center_vertical"
@@ -9,6 +11,7 @@
     android:paddingTop="12dp"
     android:paddingEnd="16dp">
 
+    <!-- 경로 설정 버튼 -->
     <LinearLayout
         android:id="@+id/btn_route_setting"
         android:layout_width="wrap_content"
@@ -37,11 +40,13 @@
             android:textStyle="bold" />
     </LinearLayout>
 
+    <!-- 버튼 사이의 빈 공간 -->
     <Space
         android:layout_width="0dp"
         android:layout_height="0dp"
         android:layout_weight="1" />
 
+    <!-- 음성 알림 버튼 -->
     <LinearLayout
         android:id="@+id/btn_voice_toggle"
         android:layout_width="wrap_content"
@@ -68,5 +73,19 @@
             android:text="음성 알림 켜짐"
             android:textColor="@color/text_primary"
             android:textSize="12sp" />
+
     </LinearLayout>
+
+    <!-- 설정 버튼: 음성 알림 버튼과 별도로 배치 -->
+    <ImageButton
+        android:id="@+id/btn_settings"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="8dp"
+        android:background="@drawable/bg_button_small"
+        android:contentDescription="설정"
+        android:padding="9dp"
+        android:src="@android:drawable/ic_menu_preferences"
+        app:tint="@color/text_primary" />
+
 </LinearLayout>

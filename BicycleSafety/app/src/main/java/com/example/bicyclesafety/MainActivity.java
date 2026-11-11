@@ -21,6 +21,11 @@ import com.kakao.vectormap.LatLng;
 import com.kakao.vectormap.MapLifeCycleCallback;
 import com.kakao.vectormap.MapView;
 import com.google.android.material.bottomsheet.BottomSheetBehavior;
+import android.graphics.Color;
+import com.kakao.vectormap.label.LabelOptions;
+import com.kakao.vectormap.label.LabelStyle;
+import com.kakao.vectormap.label.LabelTextBuilder;
+
 
 public class MainActivity extends AppCompatActivity {
 
@@ -88,6 +93,10 @@ public class MainActivity extends AppCompatActivity {
                 Toast.makeText(this, "지도 축소 기능은 추후 연결됩니다.", Toast.LENGTH_SHORT).show());
         findViewById(R.id.btn_my_location).setOnClickListener(v ->
                 Toast.makeText(this, "현재 위치 기능은 추후 연결됩니다.", Toast.LENGTH_SHORT).show());
+        // 설정 버튼 클릭 이벤트
+        findViewById(R.id.btn_settings).setOnClickListener(v -> {
+            showSettingsDialog();
+        });
 
         // 화면 회전 시 안전 수칙 확인 상태 복원
         if (savedInstanceState != null) {
@@ -124,6 +133,7 @@ public class MainActivity extends AppCompatActivity {
                             Log.d(
                                     TAG,
                                     "안전 수칙 확인 완료"
+
                             );
 
                             // 안전 수칙 확인 후 지도 시작
@@ -218,6 +228,58 @@ public class MainActivity extends AppCompatActivity {
                     public void onMapReady(KakaoMap kakaoMap) {
 
                         Log.d(TAG, "카카오맵 연결 성공");
+                        // 첫 번째 샘플 위험지점 (실제 사고 데이터 아님)
+                        RiskPoint point1 = new RiskPoint();
+
+                        point1.id = "R001";
+                        point1.name = "서울시청 주변";
+                        point1.riskLevel = "높음";
+                        point1.description = "교차로 통행 시 주변 차량에 주의하세요.";
+                        point1.latitude = 37.5665;
+                        point1.longitude = 126.9780;
+                        // 공통 메서드로 첫 번째 위험지점 표시
+                        addRiskMarker(kakaoMap, point1);
+                        // 두 번째 샘플 위험지점 (실제 사고 데이터 아님)
+                        RiskPoint point2 = new RiskPoint();
+
+                        point2.id = "R002";
+                        point2.name = "덕수궁 주변";
+                        point2.riskLevel = "보통";
+                        point2.description = "보행자와 자전거 이동 시 주변을 확인하세요.";
+                        point2.latitude = 37.5681;
+                        point2.longitude = 126.9759;
+
+                        addRiskMarker(kakaoMap, point2);
+
+
+                        // 세 번째 샘플 위험지점 (실제 사고 데이터 아님)
+                        RiskPoint point3 = new RiskPoint();
+
+                        point3.id = "R003";
+                        point3.name = "광화문역 주변";
+                        point3.riskLevel = "높음";
+                        point3.description = "교차로와 차량 진입 구간에 주의하세요.";
+                        point3.latitude = 37.5716;
+                        point3.longitude = 126.9769;
+
+                        addRiskMarker(kakaoMap, point3);
+                        // 위험지점 마커 클릭 이벤트
+                        kakaoMap.setOnLabelClickListener((map, layer, label) -> {
+
+                            // 클릭한 마커에 연결된 데이터 가져오기
+                            Object data = label.getTag();
+
+                            if (data instanceof RiskPoint) {
+
+                                RiskPoint clickedPoint = (RiskPoint) data;
+
+                                // 클릭한 위험지점 이름 표시
+                                // 클릭한 위험지점의 상세 정보 팝업 표시
+                                runOnUiThread(() -> showRiskDetailDialog(clickedPoint));
+                            }
+
+                            return true;
+                        });
                     }
 
                     // 지도 시작 위치: 서울시청
@@ -278,5 +340,62 @@ public class MainActivity extends AppCompatActivity {
         }
 
         super.onPause();
+    }
+    // 위험지점 마커를 지도에 추가하는 공통 메서드
+    private void addRiskMarker(KakaoMap kakaoMap, RiskPoint point) {
+
+        LabelOptions marker = LabelOptions.from(
+                        point.id,
+                        LatLng.from(point.latitude, point.longitude)
+                )
+                .setStyles(
+                        LabelStyle.from().setTextStyles(36, Color.RED)
+                )
+                .setTexts(new LabelTextBuilder().setTexts("●"))
+                .setClickable(true)
+                .setTag(point);
+
+        kakaoMap.getLabelManager().getLayer().addLabel(marker);
+    }
+    // 위험지점 상세 정보 팝업
+    private void showRiskDetailDialog(RiskPoint point) {
+
+        new AlertDialog.Builder(MainActivity.this)
+                .setTitle("위험지점 안내 - " + point.name)
+                .setMessage(
+                        "위험도: " + point.riskLevel
+                                + "\n\n"
+                                + point.description
+                )
+                .setPositiveButton("확인", (dialog, which) -> {
+                    dialog.dismiss();
+                })
+                .show();
+    }
+    // 설정 팝업
+    private void showSettingsDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("설정")
+                .setItems(new String[]{"테마 설정"}, (dialog, which) -> {
+                    showThemeDialog();
+                })
+                .setNegativeButton("닫기", null)
+                .show();
+    }
+
+    // 테마 설정 팝업 (임시 UI)
+    private void showThemeDialog() {
+        String[] themes = {"기본 모드", "다크 모드", "라이딩 모드"};
+
+        new AlertDialog.Builder(this)
+                .setTitle("테마 설정")
+                .setSingleChoiceItems(themes, 0, (dialog, which) -> {
+                    // 실제 테마 적용 기능은 디자인 확정 후 구현
+                })
+                .setPositiveButton("확인", (dialog, which) -> {
+                    dialog.dismiss();
+                })
+                .setNegativeButton("취소", null)
+                .show();
     }
 }
