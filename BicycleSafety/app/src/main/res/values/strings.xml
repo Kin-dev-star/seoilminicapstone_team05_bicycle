@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">BicycleSafety</string>
+    <string name="safety_title">주행 전 안전 안내</string>
+
+    <string name="safety_message">안전한 자전거 이용을 위해 확인해 주세요.\n\n• 스마트폰 거치대 사용을 권장합니다.\n• 주행 중에는 화면을 조작하지 마세요.\n• 경로 설정과 화면 조작은 안전한 곳에 정차한 후 해 주세요.\n• 앱의 안내보다 실제 도로 상황과 교통법규를 우선해 주세요.</string>
+
+    <string name="safety_confirm">확인했습니다</string>
+    <string name="safety_exit">앱 종료</string>
+    <string name="main_title">자전거 안전 지도</string>
+    <string name="open_route_settings">경로 설정</string>
+    <string name="open_safety_guide">안전 안내</string>
+    <string name="map_placeholder">카카오맵 연결 예정</string>
+</resources>
