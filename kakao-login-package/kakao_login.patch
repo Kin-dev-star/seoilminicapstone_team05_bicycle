@@ -1,0 +1,734 @@
+diff -ruN '--exclude=카카오로그인_적용안내.md' a/app/build.gradle.kts b/app/build.gradle.kts
+--- a/app/build.gradle.kts	2026-11-11 05:03:18.574124800 +0000
++++ b/app/build.gradle.kts	2026-11-11 05:03:21.114732400 +0000
+@@ -36,6 +36,8 @@
+ 
+ dependencies {
+     implementation("com.kakao.maps.open:android:2.15.2")
++    // 카카오 로그인 (Kakao SDK v2)
++    implementation("com.kakao.sdk:v2-user:2.26.0")
+     implementation(libs.activity.ktx)
+     implementation(libs.appcompat)
+     implementation(libs.constraintlayout)
+diff -ruN '--exclude=카카오로그인_적용안내.md' a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+--- a/app/src/main/AndroidManifest.xml	2026-11-11 05:03:18.812628100 +0000
++++ b/app/src/main/AndroidManifest.xml	2026-11-11 05:03:21.312818200 +0000
+@@ -22,6 +22,25 @@
+                 <category android:name="android.intent.category.LAUNCHER" />
+             </intent-filter>
+         </activity>
++
++        <!-- 카카오 로그인 테스트 화면 (설정 > 카카오 로그인 테스트) -->
++        <activity
++            android:name=".LoginTestActivity"
++            android:exported="false" />
++
++        <!-- 카카오 로그인 Redirect URI: kakao{네이티브 앱 키}://oauth -->
++        <activity
++            android:name="com.kakao.sdk.auth.AuthCodeHandlerActivity"
++            android:exported="true">
++            <intent-filter>
++                <action android:name="android.intent.action.VIEW" />
++                <category android:name="android.intent.category.DEFAULT" />
++                <category android:name="android.intent.category.BROWSABLE" />
++                <data
++                    android:host="oauth"
++                    android:scheme="kakao18be7798c2d03fdfca0069f1e368b817" />
++            </intent-filter>
++        </activity>
+     </application>
+ 
+ </manifest>
+\ No newline at end of file
+diff -ruN '--exclude=카카오로그인_적용안내.md' a/app/src/main/java/com/example/bicyclesafety/KakaoLoginManager.java b/app/src/main/java/com/example/bicyclesafety/KakaoLoginManager.java
+--- a/app/src/main/java/com/example/bicyclesafety/KakaoLoginManager.java	1970-01-01 00:00:00.000000000 +0000
++++ b/app/src/main/java/com/example/bicyclesafety/KakaoLoginManager.java	2026-11-11 05:03:21.547762200 +0000
+@@ -0,0 +1,191 @@
++package com.example.bicyclesafety;
++
++import android.app.Activity;
++import android.content.Context;
++import android.os.Handler;
++import android.os.Looper;
++import android.util.Log;
++
++import com.kakao.sdk.auth.AuthApiClient;
++import com.kakao.sdk.common.model.ClientError;
++import com.kakao.sdk.common.model.ClientErrorCause;
++import com.kakao.sdk.common.util.Utility;
++import com.kakao.sdk.user.UserApiClient;
++import com.kakao.sdk.user.model.Account;
++import com.kakao.sdk.user.model.Profile;
++import com.kakao.sdk.user.model.User;
++
++import kotlin.Unit;
++
++/**
++ * 카카오 로그인 공통 클래스. 어느 화면에서든 아래처럼 호출하면 됩니다.
++ *
++ * <pre>
++ * KakaoLoginManager.login(this, new KakaoLoginManager.LoginCallback() {
++ *     public void onSuccess(KakaoLoginManager.KakaoUser user) { ... user.id, user.nickname ... }
++ *     public void onFailure(String message) { ... }
++ * });
++ * </pre>
++ *
++ * 콜백은 항상 메인(UI) 스레드에서 호출되므로 바로 화면을 바꿔도 됩니다.
++ * 사전 조건: MapApplication 에서 KakaoSdk.init(...) 호출, AndroidManifest 에 AuthCodeHandlerActivity 등록.
++ */
++public final class KakaoLoginManager {
++
++    private static final String TAG = "KakaoLogin";
++    private static final Handler MAIN = new Handler(Looper.getMainLooper());
++
++    private KakaoLoginManager() {
++    }
++
++    /** 로그인한 카카오 사용자 정보 (서버 users 테이블에 저장할 값) */
++    public static final class KakaoUser {
++        public final long id;                // 카카오 회원번호 (users.kakao_id)
++        public final String nickname;        // 동의 안 했으면 null
++        public final String profileImageUrl; // 동의 안 했으면 null
++
++        KakaoUser(long id, String nickname, String profileImageUrl) {
++            this.id = id;
++            this.nickname = nickname;
++            this.profileImageUrl = profileImageUrl;
++        }
++    }
++
++    public interface LoginCallback {
++        void onSuccess(KakaoUser user);
++
++        void onFailure(String message);
++
++        /** 사용자가 로그인 화면에서 취소함 (기본: 아무것도 안 함) */
++        default void onCancel() {
++        }
++    }
++
++    /** 기기에 카카오 토큰이 저장돼 있는지 (만료 여부는 확인 안 함) */
++    public static boolean hasToken() {
++        return AuthApiClient.getInstance().hasToken();
++    }
++
++    public static boolean isKakaoTalkAvailable(Context context) {
++        return UserApiClient.getInstance().isKakaoTalkLoginAvailable(context);
++    }
++
++    /** 카카오 디벨로퍼스에 등록해야 하는 이 PC/키스토어의 키 해시 */
++    public static String getKeyHash(Context context) {
++        return Utility.INSTANCE.getKeyHash(context);
++    }
++
++    /**
++     * 자동 로그인: 저장된 토큰이 유효하면 사용자 정보까지 조회해 onSuccess.
++     * 토큰이 없거나 만료됐으면 onFailure (→ 로그인 버튼을 보여주면 됨).
++     */
++    public static void checkAutoLogin(LoginCallback callback) {
++        if (!hasToken()) {
++            post(() -> callback.onFailure("저장된 토큰 없음"));
++            return;
++        }
++        UserApiClient.getInstance().accessTokenInfo((tokenInfo, error) -> {
++            if (error != null) {
++                post(() -> callback.onFailure("토큰 만료/무효: " + error.getMessage()));
++            } else {
++                fetchUser(callback);
++            }
++            return Unit.INSTANCE;
++        });
++    }
++
++    /** 카카오톡이 있으면 카카오톡으로, 없거나 실패하면 카카오계정(웹)으로 로그인 */
++    public static void login(Activity activity, LoginCallback callback) {
++        UserApiClient client = UserApiClient.getInstance();
++
++        if (!client.isKakaoTalkLoginAvailable(activity)) {
++            loginWithKakaoAccount(activity, callback);
++            return;
++        }
++
++        client.loginWithKakaoTalk(activity, (token, error) -> {
++            if (error != null) {
++                Log.w(TAG, "카카오톡 로그인 실패", error);
++                if (isCancelled(error)) {
++                    post(callback::onCancel);
++                } else {
++                    // 카카오톡에 연결된 계정이 없는 경우 등 → 카카오계정으로 재시도
++                    loginWithKakaoAccount(activity, callback);
++                }
++            } else if (token != null) {
++                fetchUser(callback);
++            }
++            return Unit.INSTANCE;
++        });
++    }
++
++    /** 카카오계정(웹 브라우저)으로 로그인 */
++    public static void loginWithKakaoAccount(Activity activity, LoginCallback callback) {
++        UserApiClient.getInstance().loginWithKakaoAccount(activity, (token, error) -> {
++            if (error != null) {
++                Log.w(TAG, "카카오계정 로그인 실패", error);
++                if (isCancelled(error)) {
++                    post(callback::onCancel);
++                } else {
++                    post(() -> callback.onFailure(String.valueOf(error.getMessage())));
++                }
++            } else if (token != null) {
++                fetchUser(callback);
++            }
++            return Unit.INSTANCE;
++        });
++    }
++
++    /** 현재 로그인한 사용자 정보 조회 */
++    public static void fetchUser(LoginCallback callback) {
++        UserApiClient.getInstance().me((user, error) -> {
++            if (error != null) {
++                post(() -> callback.onFailure("사용자 정보 조회 실패: " + error.getMessage()));
++            } else if (user != null) {
++                KakaoUser kakaoUser = toKakaoUser(user);
++                Log.d(TAG, "로그인 사용자: id=" + kakaoUser.id + ", nickname=" + kakaoUser.nickname);
++                post(() -> callback.onSuccess(kakaoUser));
++            }
++            return Unit.INSTANCE;
++        });
++    }
++
++    /** 로그아웃. 오류가 나도 기기에 저장된 토큰은 SDK가 삭제하므로 항상 onComplete 호출 */
++    public static void logout(Runnable onComplete) {
++        UserApiClient.getInstance().logout(error -> {
++            if (error != null) {
++                Log.w(TAG, "로그아웃 중 오류 (로컬 토큰은 삭제됨)", error);
++            }
++            post(onComplete);
++            return Unit.INSTANCE;
++        });
++    }
++
++    private static KakaoUser toKakaoUser(User user) {
++        String nickname = null;
++        String imageUrl = null;
++        Account account = user.getKakaoAccount();
++        if (account != null) {
++            Profile profile = account.getProfile();
++            if (profile != null) {
++                nickname = profile.getNickname();
++                imageUrl = profile.getProfileImageUrl();
++            }
++        }
++        Long id = user.getId();
++        return new KakaoUser(id == null ? 0L : id, nickname, imageUrl);
++    }
++
++    private static boolean isCancelled(Throwable error) {
++        return error instanceof ClientError
++                && ((ClientError) error).getReason() == ClientErrorCause.Cancelled;
++    }
++
++    private static void post(Runnable r) {
++        if (Looper.myLooper() == Looper.getMainLooper()) {
++            r.run();
++        } else {
++            MAIN.post(r);
++        }
++    }
++}
+diff -ruN '--exclude=카카오로그인_적용안내.md' a/app/src/main/java/com/example/bicyclesafety/LoginTestActivity.java b/app/src/main/java/com/example/bicyclesafety/LoginTestActivity.java
+--- a/app/src/main/java/com/example/bicyclesafety/LoginTestActivity.java	1970-01-01 00:00:00.000000000 +0000
++++ b/app/src/main/java/com/example/bicyclesafety/LoginTestActivity.java	2026-11-11 05:03:21.517760500 +0000
+@@ -0,0 +1,141 @@
++package com.example.bicyclesafety;
++
++import android.os.Bundle;
++import android.util.Log;
++import android.widget.Button;
++import android.widget.TextView;
++
++import androidx.activity.EdgeToEdge;
++import androidx.appcompat.app.AppCompatActivity;
++import androidx.core.content.ContextCompat;
++import androidx.core.graphics.Insets;
++import androidx.core.view.ViewCompat;
++import androidx.core.view.WindowInsetsCompat;
++
++import java.text.SimpleDateFormat;
++import java.util.Date;
++import java.util.Locale;
++
++/**
++ * 카카오 로그인이 제대로 동작하는지 확인하는 테스트 화면.
++ * 지도 화면 > 설정(톱니바퀴) > "카카오 로그인 테스트" 로 들어옵니다.
++ * 실제 로그인 처리는 KakaoLoginManager 가 하고, 이 화면은 결과만 보여줍니다.
++ */
++public class LoginTestActivity extends AppCompatActivity {
++
++    private static final String TAG = "KakaoLogin";
++
++    private TextView tvStatus;
++    private TextView tvUserId;
++    private TextView tvNickname;
++    private TextView tvLog;
++    private Button btnLogout;
++    private Button btnRefresh;
++
++    /** 로그인/자동 로그인/정보 조회 결과 공통 처리 */
++    private final KakaoLoginManager.LoginCallback resultCallback = new KakaoLoginManager.LoginCallback() {
++        @Override
++        public void onSuccess(KakaoLoginManager.KakaoUser user) {
++            appendLog("로그인 성공: 회원번호=" + user.id + ", 닉네임=" + user.nickname);
++            showLoggedIn(user);
++            // TODO: 서버(MySQL users 테이블)에 회원 저장 API가 생기면 여기서 호출
++        }
++
++        @Override
++        public void onFailure(String message) {
++            appendLog("로그인 안 됨: " + message);
++            showLoggedOut();
++        }
++
++        @Override
++        public void onCancel() {
++            appendLog("사용자가 로그인을 취소했습니다");
++        }
++    };
++
++    @Override
++    protected void onCreate(Bundle savedInstanceState) {
++        super.onCreate(savedInstanceState);
++
++        EdgeToEdge.enable(this);
++        setContentView(R.layout.activity_login_test);
++
++        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.login_root), (v, insets) -> {
++            Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
++            v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
++            return insets;
++        });
++
++        tvStatus = findViewById(R.id.tv_login_status);
++        tvUserId = findViewById(R.id.tv_user_id);
++        tvNickname = findViewById(R.id.tv_nickname);
++        tvLog = findViewById(R.id.tv_log);
++        btnLogout = findViewById(R.id.btn_logout);
++        btnRefresh = findViewById(R.id.btn_refresh_user);
++        TextView tvKeyHash = findViewById(R.id.tv_key_hash);
++        TextView tvTalkAvailable = findViewById(R.id.tv_talk_available);
++
++        findViewById(R.id.btn_back).setOnClickListener(v -> finish());
++        findViewById(R.id.btn_login_talk).setOnClickListener(v -> {
++            appendLog("카카오 로그인 시도 (카카오톡 우선)");
++            KakaoLoginManager.login(this, resultCallback);
++        });
++        findViewById(R.id.btn_login_account).setOnClickListener(v -> {
++            appendLog("카카오계정(웹)으로 로그인 시도");
++            KakaoLoginManager.loginWithKakaoAccount(this, resultCallback);
++        });
++        btnRefresh.setOnClickListener(v -> KakaoLoginManager.fetchUser(resultCallback));
++        btnLogout.setOnClickListener(v -> KakaoLoginManager.logout(() -> {
++            appendLog("로그아웃 완료");
++            showLoggedOut();
++        }));
++
++        // 키 해시: 카카오 디벨로퍼스 > 앱 > 플랫폼 키 > 네이티브 앱 키 에 등록해야 로그인 가능
++        String keyHash = KakaoLoginManager.getKeyHash(this);
++        tvKeyHash.setText(keyHash);
++        Log.d(TAG, "keyHash=" + keyHash);
++
++        tvTalkAvailable.setText(KakaoLoginManager.isKakaoTalkAvailable(this)
++                ? "설치됨 (카카오톡으로 로그인)"
++                : "없음 (카카오계정 웹 로그인)");
++
++        appendLog("카카오 SDK 초기화 완료");
++        showLoggedOut();
++
++        // 저장된 토큰이 있으면 자동 로그인
++        KakaoLoginManager.checkAutoLogin(resultCallback);
++    }
++
++    private void showLoggedIn(KakaoLoginManager.KakaoUser user) {
++        tvStatus.setText("로그인됨");
++        tvStatus.setTextColor(ContextCompat.getColor(this, R.color.status_ok));
++        tvUserId.setText(String.valueOf(user.id));
++        tvNickname.setText(user.nickname != null ? user.nickname : "(닉네임 동의 안 함)");
++        setButtonEnabled(btnLogout, true);
++        setButtonEnabled(btnRefresh, true);
++    }
++
++    private void showLoggedOut() {
++        tvStatus.setText("로그인 안 됨");
++        tvStatus.setTextColor(ContextCompat.getColor(this, R.color.text_secondary));
++        tvUserId.setText("-");
++        tvNickname.setText("-");
++        setButtonEnabled(btnLogout, false);
++        setButtonEnabled(btnRefresh, false);
++    }
++
++    private void setButtonEnabled(Button button, boolean enabled) {
++        button.setEnabled(enabled);
++        button.setAlpha(enabled ? 1f : 0.4f);
++    }
++
++    /** 화면 아래 로그 영역 + Logcat(태그: KakaoLogin)에 기록 */
++    private void appendLog(String message) {
++        String time = new SimpleDateFormat("HH:mm:ss", Locale.KOREA).format(new Date());
++        String line = "[" + time + "] " + message;
++        Log.d(TAG, line);
++
++        CharSequence old = tvLog.getText();
++        tvLog.setText(old.length() == 0 ? line : line + "\n" + old);
++    }
++}
+diff -ruN '--exclude=카카오로그인_적용안내.md' a/app/src/main/java/com/example/bicyclesafety/MainActivity.java b/app/src/main/java/com/example/bicyclesafety/MainActivity.java
+--- a/app/src/main/java/com/example/bicyclesafety/MainActivity.java	2026-11-11 05:03:18.941155700 +0000
++++ b/app/src/main/java/com/example/bicyclesafety/MainActivity.java	2026-11-11 05:03:21.435420800 +0000
+@@ -1,6 +1,7 @@
+ 
+ package com.example.bicyclesafety;
+ 
++import android.content.Intent;
+ import android.os.Bundle;
+ import android.util.Log;
+ import android.view.View;
+@@ -376,8 +377,13 @@
+     private void showSettingsDialog() {
+         new AlertDialog.Builder(this)
+                 .setTitle("설정")
+-                .setItems(new String[]{"테마 설정"}, (dialog, which) -> {
+-                    showThemeDialog();
++                .setItems(new String[]{"테마 설정", "카카오 로그인 테스트"}, (dialog, which) -> {
++                    if (which == 0) {
++                        showThemeDialog();
++                    } else {
++                        // 카카오 로그인 동작 확인 화면
++                        startActivity(new Intent(this, LoginTestActivity.class));
++                    }
+                 })
+                 .setNegativeButton("닫기", null)
+                 .show();
+diff -ruN '--exclude=카카오로그인_적용안내.md' a/app/src/main/java/com/example/bicyclesafety/MapApplication.java b/app/src/main/java/com/example/bicyclesafety/MapApplication.java
+--- a/app/src/main/java/com/example/bicyclesafety/MapApplication.java	2026-11-11 05:03:18.963159400 +0000
++++ b/app/src/main/java/com/example/bicyclesafety/MapApplication.java	2026-11-11 05:03:21.456420500 +0000
+@@ -1,17 +1,24 @@
+-package com.example.bicyclesafety;
+-
+-import android.app.Application;
+-import com.kakao.vectormap.KakaoMapSdk;
+-
+-public class MapApplication extends Application {
+-
+-    @Override
+-    public void onCreate() {
+-        super.onCreate();
+-
+-        KakaoMapSdk.init(
+-                this,
+-                "18be7798c2d03fdfca0069f1e368b817"
+-        );
+-    }
+-}
+\ No newline at end of file
++package com.example.bicyclesafety;
++
++import android.app.Application;
++
++import com.kakao.sdk.common.KakaoSdk;
++import com.kakao.vectormap.KakaoMapSdk;
++
++public class MapApplication extends Application {
++
++    // 카카오 디벨로퍼스 네이티브 앱 키 (카카오맵과 카카오 로그인이 같은 키를 사용)
++    // 바꿀 때는 AndroidManifest.xml 의 android:scheme="kakao{키}" 도 함께 바꿔야 합니다.
++    public static final String KAKAO_NATIVE_APP_KEY = "18be7798c2d03fdfca0069f1e368b817";
++
++    @Override
++    public void onCreate() {
++        super.onCreate();
++
++        // 카카오맵 SDK 초기화
++        KakaoMapSdk.init(this, KAKAO_NATIVE_APP_KEY);
++
++        // 카카오 로그인 SDK 초기화
++        KakaoSdk.init(this, KAKAO_NATIVE_APP_KEY);
++    }
++}
+diff -ruN '--exclude=카카오로그인_적용안내.md' a/app/src/main/res/drawable/bg_button_kakao.xml b/app/src/main/res/drawable/bg_button_kakao.xml
+--- a/app/src/main/res/drawable/bg_button_kakao.xml	1970-01-01 00:00:00.000000000 +0000
++++ b/app/src/main/res/drawable/bg_button_kakao.xml	2026-11-11 05:03:22.233802600 +0000
+@@ -0,0 +1,16 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- 카카오 로그인 버튼 배경 (카카오 디자인 가이드 색상 #FEE500) -->
++<selector xmlns:android="http://schemas.android.com/apk/res/android">
++    <item android:state_pressed="true">
++        <shape android:shape="rectangle">
++            <solid android:color="#FFE6CF00" />
++            <corners android:radius="8dp" />
++        </shape>
++    </item>
++    <item>
++        <shape android:shape="rectangle">
++            <solid android:color="#FFFEE500" />
++            <corners android:radius="8dp" />
++        </shape>
++    </item>
++</selector>
+diff -ruN '--exclude=카카오로그인_적용안내.md' a/app/src/main/res/layout/activity_login_test.xml b/app/src/main/res/layout/activity_login_test.xml
+--- a/app/src/main/res/layout/activity_login_test.xml	1970-01-01 00:00:00.000000000 +0000
++++ b/app/src/main/res/layout/activity_login_test.xml	2026-11-11 05:03:22.448313700 +0000
+@@ -0,0 +1,234 @@
++<?xml version="1.0" encoding="utf-8"?>
++<!-- 카카오 로그인 동작 확인 화면 -->
++<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
++    android:id="@+id/login_root"
++    android:layout_width="match_parent"
++    android:layout_height="match_parent"
++    android:background="@color/map_background"
++    android:fillViewport="true">
++
++    <LinearLayout
++        android:layout_width="match_parent"
++        android:layout_height="wrap_content"
++        android:orientation="vertical"
++        android:padding="20dp">
++
++        <!-- 상단: 뒤로가기 + 제목 -->
++        <LinearLayout
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:gravity="center_vertical"
++            android:orientation="horizontal">
++
++            <androidx.appcompat.widget.AppCompatButton
++                android:id="@+id/btn_back"
++                android:layout_width="wrap_content"
++                android:layout_height="40dp"
++                android:background="@drawable/bg_button_outline"
++                android:minWidth="0dp"
++                android:paddingStart="14dp"
++                android:paddingEnd="14dp"
++                android:text="← 지도"
++                android:textColor="@color/primary"
++                android:textSize="14sp" />
++
++            <TextView
++                android:layout_width="0dp"
++                android:layout_height="wrap_content"
++                android:layout_marginStart="12dp"
++                android:layout_weight="1"
++                android:text="카카오 로그인 테스트"
++                android:textColor="@color/text_primary"
++                android:textSize="20sp"
++                android:textStyle="bold" />
++        </LinearLayout>
++
++        <!-- 로그인 상태 카드 -->
++        <LinearLayout
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:layout_marginTop="16dp"
++            android:background="@drawable/bg_card"
++            android:orientation="vertical"
++            android:padding="16dp">
++
++            <TextView
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:text="로그인 상태"
++                android:textColor="@color/text_secondary"
++                android:textSize="13sp" />
++
++            <TextView
++                android:id="@+id/tv_login_status"
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginTop="4dp"
++                android:text="확인 중…"
++                android:textColor="@color/text_secondary"
++                android:textSize="22sp"
++                android:textStyle="bold" />
++
++            <TextView
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginTop="14dp"
++                android:text="카카오 회원번호"
++                android:textColor="@color/text_secondary"
++                android:textSize="13sp" />
++
++            <TextView
++                android:id="@+id/tv_user_id"
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:text="-"
++                android:textColor="@color/text_primary"
++                android:textIsSelectable="true"
++                android:textSize="16sp" />
++
++            <TextView
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginTop="10dp"
++                android:text="닉네임"
++                android:textColor="@color/text_secondary"
++                android:textSize="13sp" />
++
++            <TextView
++                android:id="@+id/tv_nickname"
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:text="-"
++                android:textColor="@color/text_primary"
++                android:textSize="16sp" />
++        </LinearLayout>
++
++        <!-- 버튼 -->
++        <androidx.appcompat.widget.AppCompatButton
++            android:id="@+id/btn_login_talk"
++            android:layout_width="match_parent"
++            android:layout_height="52dp"
++            android:layout_marginTop="16dp"
++            android:background="@drawable/bg_button_kakao"
++            android:text="카카오 로그인"
++            android:textColor="#D9000000"
++            android:textSize="16sp"
++            android:textStyle="bold" />
++
++        <androidx.appcompat.widget.AppCompatButton
++            android:id="@+id/btn_login_account"
++            android:layout_width="match_parent"
++            android:layout_height="48dp"
++            android:layout_marginTop="8dp"
++            android:background="@drawable/bg_button_outline"
++            android:text="카카오계정(웹)으로 로그인"
++            android:textColor="@color/primary"
++            android:textSize="14sp" />
++
++        <LinearLayout
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:layout_marginTop="8dp"
++            android:orientation="horizontal">
++
++            <androidx.appcompat.widget.AppCompatButton
++                android:id="@+id/btn_refresh_user"
++                android:layout_width="0dp"
++                android:layout_height="48dp"
++                android:layout_marginEnd="4dp"
++                android:layout_weight="1"
++                android:background="@drawable/bg_button_outline"
++                android:enabled="false"
++                android:text="정보 다시 조회"
++                android:textColor="@color/primary"
++                android:textSize="14sp" />
++
++            <androidx.appcompat.widget.AppCompatButton
++                android:id="@+id/btn_logout"
++                android:layout_width="0dp"
++                android:layout_height="48dp"
++                android:layout_marginStart="4dp"
++                android:layout_weight="1"
++                android:background="@drawable/bg_button_primary"
++                android:enabled="false"
++                android:text="로그아웃"
++                android:textColor="@color/on_primary"
++                android:textSize="14sp" />
++        </LinearLayout>
++
++        <!-- 환경 점검 카드 -->
++        <LinearLayout
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:layout_marginTop="16dp"
++            android:background="@drawable/bg_card"
++            android:orientation="vertical"
++            android:padding="16dp">
++
++            <TextView
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:text="환경 점검"
++                android:textColor="@color/text_primary"
++                android:textSize="15sp"
++                android:textStyle="bold" />
++
++            <TextView
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginTop="10dp"
++                android:text="카카오톡"
++                android:textColor="@color/text_secondary"
++                android:textSize="13sp" />
++
++            <TextView
++                android:id="@+id/tv_talk_available"
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:text="-"
++                android:textColor="@color/text_primary"
++                android:textSize="14sp" />
++
++            <TextView
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:layout_marginTop="10dp"
++                android:text="키 해시 (카카오 디벨로퍼스에 등록 필요, 길게 눌러 복사)"
++                android:textColor="@color/text_secondary"
++                android:textSize="13sp" />
++
++            <TextView
++                android:id="@+id/tv_key_hash"
++                android:layout_width="wrap_content"
++                android:layout_height="wrap_content"
++                android:fontFamily="monospace"
++                android:text="-"
++                android:textColor="@color/text_primary"
++                android:textIsSelectable="true"
++                android:textSize="14sp" />
++        </LinearLayout>
++
++        <!-- 실행 로그 -->
++        <TextView
++            android:layout_width="wrap_content"
++            android:layout_height="wrap_content"
++            android:layout_marginTop="16dp"
++            android:text="실행 로그 (최신순)"
++            android:textColor="@color/text_primary"
++            android:textSize="15sp"
++            android:textStyle="bold" />
++
++        <TextView
++            android:id="@+id/tv_log"
++            android:layout_width="match_parent"
++            android:layout_height="wrap_content"
++            android:layout_marginTop="8dp"
++            android:background="@drawable/bg_card"
++            android:fontFamily="monospace"
++            android:minHeight="120dp"
++            android:padding="12dp"
++            android:textColor="@color/text_primary"
++            android:textIsSelectable="true"
++            android:textSize="12sp" />
++    </LinearLayout>
++</ScrollView>
+diff -ruN '--exclude=카카오로그인_적용안내.md' a/app/src/main/res/values/colors.xml b/app/src/main/res/values/colors.xml
+--- a/app/src/main/res/values/colors.xml	2026-11-11 05:03:20.339110800 +0000
++++ b/app/src/main/res/values/colors.xml	2026-11-11 05:03:22.867312400 +0000
+@@ -17,4 +17,5 @@
+     <color name="risk_low">#FFC9D9F2</color>
+     <color name="risk_mid">#FF7FA3D6</color>
+     <color name="risk_high">#FF2D5A9A</color>
++    <color name="status_ok">#FF1E8E3E</color>
+ </resources>
+diff -ruN '--exclude=카카오로그인_적용안내.md' a/settings.gradle.kts b/settings.gradle.kts
+--- a/settings.gradle.kts	2026-11-11 05:03:20.799913400 +0000
++++ b/settings.gradle.kts	2026-11-11 05:03:21.081731000 +0000
+@@ -20,6 +20,8 @@
+         google()
+         mavenCentral()
+         maven { url = uri("https://devrepo.kakao.com/nexus/repository/kakaomap-releases/") }
++        // 카카오 로그인 SDK 저장소
++        maven { url = uri("https://devrepo.kakao.com/nexus/content/groups/public/") }
+     }
+ }
+ 
