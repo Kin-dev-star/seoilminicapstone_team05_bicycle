@@ -33,7 +33,7 @@ diff -ruN '--exclude=카카오로그인_적용안내.md' a/app/src/main/AndroidM
 +                <category android:name="android.intent.category.BROWSABLE" />
 +                <data
 +                    android:host="oauth"
-+                    android:scheme="kakao18be7798c2d03fdfca0069f1e368b817" />
++                    android:scheme="kakaoYOUR_KAKAO_NATIVE_APP_KEY" />
 +            </intent-filter>
 +        </activity>
      </application>
@@ -424,7 +424,7 @@ diff -ruN '--exclude=카카오로그인_적용안내.md' a/app/src/main/java/com
 -
 -        KakaoMapSdk.init(
 -                this,
--                "18be7798c2d03fdfca0069f1e368b817"
+-                "YOUR_KAKAO_NATIVE_APP_KEY"
 -        );
 -    }
 -}
@@ -440,7 +440,7 @@ diff -ruN '--exclude=카카오로그인_적용안내.md' a/app/src/main/java/com
 +
 +    // 카카오 디벨로퍼스 네이티브 앱 키 (카카오맵과 카카오 로그인이 같은 키를 사용)
 +    // 바꿀 때는 AndroidManifest.xml 의 android:scheme="kakao{키}" 도 함께 바꿔야 합니다.
-+    public static final String KAKAO_NATIVE_APP_KEY = "18be7798c2d03fdfca0069f1e368b817";
++    public static final String KAKAO_NATIVE_APP_KEY = "YOUR_KAKAO_NATIVE_APP_KEY";
 +
 +    @Override
 +    public void onCreate() {

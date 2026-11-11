@@ -1,6 +1,16 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
 }
+
+// 카카오 네이티브 앱 키는 git에 올라가지 않는 local.properties에서 읽는다.
+// local.properties 에 다음 한 줄을 추가: KAKAO_NATIVE_APP_KEY=발급받은_네이티브_앱_키
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+val kakaoNativeAppKey: String = localProperties.getProperty("KAKAO_NATIVE_APP_KEY", "")
 
 android {
     namespace = "com.example.bicyclesafety"
@@ -19,6 +29,13 @@ android {
         }
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("String", "KAKAO_NATIVE_APP_KEY", "\"$kakaoNativeAppKey\"")
+        manifestPlaceholders["KAKAO_NATIVE_APP_KEY"] = kakaoNativeAppKey
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     buildTypes {

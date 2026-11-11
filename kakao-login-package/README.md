@@ -48,7 +48,7 @@ implementation("com.kakao.sdk:v2-user:2.26.0")
 ```java
 import com.kakao.sdk.common.KakaoSdk;
 
-public static final String KAKAO_NATIVE_APP_KEY = "18be7798c2d03fdfca0069f1e368b817";
+public static final String KAKAO_NATIVE_APP_KEY = "YOUR_KAKAO_NATIVE_APP_KEY";
 
 // onCreate() 안, KakaoMapSdk.init 아래에
 KakaoSdk.init(this, KAKAO_NATIVE_APP_KEY);
@@ -71,7 +71,7 @@ KakaoSdk.init(this, KAKAO_NATIVE_APP_KEY);
         <category android:name="android.intent.category.BROWSABLE" />
         <data
             android:host="oauth"
-            android:scheme="kakao18be7798c2d03fdfca0069f1e368b817" />
+            android:scheme="kakaoYOUR_KAKAO_NATIVE_APP_KEY" />
     </intent-filter>
 </activity>
 ```

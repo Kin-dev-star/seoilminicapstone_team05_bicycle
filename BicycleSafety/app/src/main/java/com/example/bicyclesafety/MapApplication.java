@@ -11,7 +11,7 @@ public class MapApplication extends Application {
 
         KakaoMapSdk.init(
                 this,
-                "18be7798c2d03fdfca0069f1e368b817"
+                BuildConfig.KAKAO_NATIVE_APP_KEY
         );
     }
 }
