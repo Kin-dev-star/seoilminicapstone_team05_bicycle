@@ -1,0 +1,4 @@
+<resources>
+    <!-- (선택) 앱 테마의 windowBackground 에 쓰면 켤 때 흰 화면이 깜빡이지 않음 -->
+    <color name="bike_blue">#FF1A5FD6</color>
+</resources>
