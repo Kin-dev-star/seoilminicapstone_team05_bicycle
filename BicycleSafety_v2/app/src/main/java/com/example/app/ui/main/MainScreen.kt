@@ -321,10 +321,8 @@ fun MainScreen(
     val routeReady = routeUiState.distanceMeters != null && !routeUiState.loading && !routeUiState.error
     val navActive = navUiState.active
     val previewCoords = remember { arrayOfNulls<LayoutCoordinates>(1) }
-    // 경로 분석이 끝나면 창을 닫고 지도 위 전체 경로 + 아래 요약 카드를 보여줌 (카카오맵 방식)
-    LaunchedEffect(routeReady) {
-        if (routeReady && routeOpen) closeRoute()
-    }
+    // 경로 분석 후에는 창을 그대로 두어 창 안의 '안내 시작'을 바로 누를 수 있게 함.
+    // 창을 닫으면 지도 위 전체 경로 + 아래 요약 카드(경로 미리보기)가 보임
     // 안내가 시작되면 열린 창·메뉴를 모두 닫고 내비게이션 화면만 남김
     LaunchedEffect(navActive) {
         if (navActive) {
@@ -436,7 +434,6 @@ fun MainScreen(
                 if (showPreview) {
                     RoutePreviewPanel(
                         state = routeUiState,
-                        onStartGuidance = onStartGuidance,
                         onEditRoute = openRouteFromPreview,
                         onClose = onClearRoute,
                         modifier = Modifier
