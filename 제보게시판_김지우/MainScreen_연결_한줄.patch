@@ -1,0 +1,10 @@
+--- a/app/src/main/java/com/example/app/ui/main/MainScreen.kt	2026-11-26 00:49:28.368180940 +0900
++++ b/app/src/main/java/com/example/app/ui/main/MainScreen.kt	2026-11-26 00:49:28.402031736 +0900
+@@ -1521,6 +1521,7 @@
+         when (page) {
+             NavItem.Account -> MyPageBody(account, onKakaoLogin, onKakaoLogout)
+             NavItem.Settings -> SettingsBody(settings)
++            NavItem.Report -> ReportScreen()   // 제보게시판 (ReportScreen.kt)
+             else -> PlaceholderBody(page)
+         }
+     }
