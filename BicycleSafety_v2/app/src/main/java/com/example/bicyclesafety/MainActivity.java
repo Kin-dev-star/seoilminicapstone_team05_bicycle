@@ -45,6 +45,10 @@ import java.util.concurrent.Executors;
 import com.kakao.vectormap.label.LabelOptions;
 import com.kakao.vectormap.label.LabelStyle;
 import com.kakao.vectormap.label.LabelTextBuilder;
+import com.kakao.vectormap.shape.DotPoints;
+import com.kakao.vectormap.shape.PolygonOptions;
+import com.kakao.vectormap.shape.PolygonStyles;
+import com.kakao.vectormap.shape.PolygonStylesSet;
 
 /**
  * Java feature layer retained from the tested 11/11 project.
@@ -90,6 +94,11 @@ public class MainActivity extends AppCompatActivity {
     private static final int LOCATION_REQUEST = 501;
     private static final double WARNING_DISTANCE_METERS = 150.0;
     private static final double ROUTE_HAZARD_METERS = 150.0;
+    // 접근 경고 범위 표시: 반경이 다른 반투명 원을 겹쳐 가운데가 진한 그라데이션처럼 보이게 함
+    private static final int ZONE_RINGS = 5;
+    private static final int ZONE_RING_ALPHA = 20;      // 원 하나의 투명도 (0~255)
+    private static final int ZONE_EDGE_ALPHA = 110;     // 150m 경계선 투명도
+    private static final int MAX_WARNING_ZONES = 40;    // 지도 부하를 줄이려고 가까운 지점만 표시
     private int routeRequestRevision = 0;
     private boolean routeRequestInProgress = false;
 
@@ -251,6 +260,7 @@ public class MainActivity extends AppCompatActivity {
         if (activeMap == null) return;
         try {
             activeMap.getLabelManager().getLayer().removeAll();
+            activeMap.getShapeManager().getLayer().removeAll();
             currentLocationLabel = null;
             List<RiskPoint> targets = new ArrayList<>();
             if (nearRoute != null) {
@@ -266,8 +276,10 @@ public class MainActivity extends AppCompatActivity {
             }
             int shown = 0;
             for (RiskPoint point : targets) {
-                if (shown++ >= 80) break;
+                if (shown >= 80) break;
+                if (shown < MAX_WARNING_ZONES) addWarningZone(activeMap, point);
                 addRiskMarker(activeMap, point);
+                shown++;
             }
             if (lastLocation != null) drawCurrentLocation(lastLocation);
         } catch (Exception error) {
@@ -309,6 +321,31 @@ public class MainActivity extends AppCompatActivity {
             if (distanceToRoute(point, path) <= ROUTE_HAZARD_METERS) result.add(point);
         }
         return result;
+    }
+
+    /**
+     * 사고다발지역 접근 안내가 시작되는 범위(WARNING_DISTANCE_METERS, 150m)를 지도에 표시합니다.
+     * 카카오맵 도형은 그라데이션을 지원하지 않아서, 반경이 다른 반투명 원 ZONE_RINGS개를 겹쳐
+     * 가운데로 갈수록 진해지게 하고, 바깥 경계에는 얇은 테두리를 그립니다.
+     */
+    private void addWarningZone(KakaoMap kakaoMap, RiskPoint point) {
+        try {
+            LatLng center = LatLng.from(point.latitude, point.longitude);
+            for (int i = ZONE_RINGS; i >= 1; i--) {
+                float radius = (float) (WARNING_DISTANCE_METERS * i / ZONE_RINGS);
+                kakaoMap.getShapeManager().getLayer().addPolygon(
+                        PolygonOptions.from(DotPoints.fromCircle(center, radius))
+                                .setStylesSet(PolygonStylesSet.from(PolygonStyles.from(
+                                        Color.argb(ZONE_RING_ALPHA, 217, 58, 58)))));
+            }
+            float edge = (float) WARNING_DISTANCE_METERS;
+            kakaoMap.getShapeManager().getLayer().addPolygon(
+                    PolygonOptions.from(DotPoints.fromCircle(center, edge).setHoleCircle((int) WARNING_DISTANCE_METERS - 4))
+                            .setStylesSet(PolygonStylesSet.from(PolygonStyles.from(
+                                    Color.argb(ZONE_EDGE_ALPHA, 217, 58, 58)))));
+        } catch (Exception error) {
+            Log.w(TAG, "접근 경고 범위 표시 실패: " + point.id, error);
+        }
     }
 
     private void addRiskMarker(KakaoMap kakaoMap, RiskPoint point) {
