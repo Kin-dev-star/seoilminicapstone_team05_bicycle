@@ -121,6 +121,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.app.ui.theme.LocalSoftShadow
 import com.example.app.ui.theme.Soft
+import com.example.app.ui.NavUiState
 import com.example.app.ui.RouteUiState
 import java.util.Locale
 import com.example.app.ui.theme.SoftShadow
@@ -199,6 +200,10 @@ fun MainScreen(
     routeUiState: RouteUiState = RouteUiState(),
     onStartGuidance: () -> Unit = {},
     proximityWarning: String? = null,
+    navUiState: NavUiState = NavUiState(),
+    onEndGuidance: () -> Unit = {},
+    onReroute: () -> Unit = {},
+    onClearRoute: () -> Unit = {},
 ) {
     val density = LocalDensity.current
     val softShadow = remember(density) { SoftShadow(density, base = BAR_H, corner = CORNER) }
@@ -312,7 +317,42 @@ fun MainScreen(
         drum.bringToFront(item)
     }
 
-    BackHandler(enabled = openPage != null || routeOpen || overview) {
+    // ── 경로 미리보기 · 길 안내 ──
+    val routeReady = routeUiState.distanceMeters != null && !routeUiState.loading && !routeUiState.error
+    val navActive = navUiState.active
+    val previewCoords = remember { arrayOfNulls<LayoutCoordinates>(1) }
+    // 경로 분석이 끝나면 창을 닫고 지도 위 전체 경로 + 아래 요약 카드를 보여줌 (카카오맵 방식)
+    LaunchedEffect(routeReady) {
+        if (routeReady && routeOpen) closeRoute()
+    }
+    // 안내가 시작되면 열린 창·메뉴를 모두 닫고 내비게이션 화면만 남김
+    LaunchedEffect(navActive) {
+        if (navActive) {
+            focusManager.clearFocus()
+            overview = false
+            routeOpen = false
+            routeReveal.snapTo(0f)
+            openPage = null
+            pageProgress.snapTo(0f)
+        }
+    }
+    // 미리보기 카드의 "경로 변경": 카드 자리에서 경로 설정 창이 열림
+    val openRouteFromPreview: () -> Unit = {
+        val root = rootCoords[0]
+        val panel = previewCoords[0]
+        if (root != null && panel != null && panel.isAttached && !routeOpen) {
+            routeFrom = root.localBoundingBoxOf(panel)
+            routeOpen = true
+            scope.launch {
+                sheetTop.snapTo(thirdTop)
+                routeReveal.snapTo(0f)
+                routeReveal.animateTo(1f, tween(420, easing = FastOutSlowInEasing))
+            }
+        }
+    }
+    val showPreview = routeReady && !routeOpen && openPage == null && !navActive
+
+    BackHandler(enabled = !navActive && (openPage != null || routeOpen || overview)) {
         when {
             openPage != null -> closePage()
             routeOpen && sheetTop.value < thirdTop - 1f -> moveSheet(thirdTop)   // 상세정보 보는 중이면 1/3로
@@ -341,92 +381,114 @@ fun MainScreen(
                 )
             }
 
-            // GPS 접근 시 화면 경고. 서버 판별이 아닌 과거 사고 지점과의 근접 테스트입니다.
-            proximityWarning?.let { warning ->
-                Text(
-                    warning,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .statusBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                        .clip(CardShape)
-                        .background(Color(0xFF502626))
-                        .padding(12.dp),
-                    color = Color.White,
-                    fontSize = 13.sp,
+            if (navActive) {
+                // 길 안내 중: 지도 위에 내비게이션 화면만 표시
+                NavigationOverlay(
+                    state = navUiState,
+                    proximityWarning = proximityWarning,
+                    onEnd = onEndGuidance,
+                    onReroute = onReroute,
                 )
-            }
+            } else {
+                // GPS 접근 시 화면 경고. 서버 판별이 아닌 과거 사고 지점과의 근접 테스트입니다.
+                proximityWarning?.let { warning ->
+                    Text(
+                        warning,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .statusBarsPadding()
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                            .clip(CardShape)
+                            .background(Color(0xFF502626))
+                            .padding(12.dp),
+                        color = Color.White,
+                        fontSize = 13.sp,
+                    )
+                }
 
-            // 원통 메뉴 오른쪽 위 작은 버튼들: 모아보기 · 현재 위치 (모아보기를 펼치면 목록 위로 같이 올라감)
-            val lift = with(density) { (LIST_H - DRUM_H).toPx() }
-            Row(
-                Modifier
-                    .align(Alignment.BottomEnd)
-                    .navigationBarsPadding()
-                    .padding(end = EDGE, bottom = EDGE + DRUM_H + 12.dp)
-                    .graphicsLayer { translationY = -lift * overviewAnim.value },
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                OverviewButton(open = overview, onClick = { overview = !overview })
-                MyLocationButton(active = false, onClick = onMyLocation)
-            }
-
-            NavDrum(
-                overview = { overviewAnim.value },
-                overviewOn = overview,
-                handle = drum,
-                onPick = pickFromOverview,
-                onSelect = selectItem,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .navigationBarsPadding()
-                    .padding(end = EDGE, bottom = EDGE)
-                    .fillMaxWidth(DRUM_WIDTH),
-            )
-
-            if (routeOpen) {
-                RouteSheet(
-                    from = routeFrom,
-                    reveal = { routeReveal.value },
-                    top = { sheetTop.value },
-                    expand = { ((thirdTop - sheetTop.value) / (thirdTop - fullTop)).coerceIn(0f, 1f) },
-                    onDrag = { dy -> scope.launch { sheetTop.snapTo((sheetTop.value + dy).coerceIn(fullTop, lowestTop)) } },
-                    onDragStopped = settleSheet,
-                    onExpand = { moveSheet(fullTop) },
-                    onClose = closeRoute,
-                    start = routeStart,
-                    onStartChange = { routeStart = it; onRouteFormChanged() },
-                    dest = routeDestination,
-                    onDestChange = { routeDestination = it; onRouteFormChanged() },
-                    option = routeOption,
-                    onOptionChange = { routeOption = it; onRouteFormChanged() },
-                    onAnalyzeRoute = onAnalyzeRoute,
-                    routeUiState = routeUiState,
-                    onStartGuidance = onStartGuidance,
-                )
-            }
-
-            openPage?.let { page ->
-                // 커지는 화면의 바깥 그림자: 화면 레이어는 모양대로 잘리므로 그 밖(뒤)에 따로 그림
-                Spacer(
+                // 원통 메뉴 오른쪽 위 작은 버튼들: 모아보기 · 현재 위치 (모아보기를 펼치면 목록 위로 같이 올라감)
+                val lift = with(density) { (LIST_H - DRUM_H).toPx() }
+                if (!showPreview) Row(
                     Modifier
-                        .fillMaxSize()
-                        .graphicsLayer()
-                        .drawBehind {
-                            val p = pageProgress.value
-                            if (p < 1f) {
-                                val rect = lerp(pageFrom, Rect(Offset.Zero, size), p)
-                                softShadow.drawRaised(this, rect, alpha = (p * 6f).coerceAtMost(1f) * (1f - p))
+                        .align(Alignment.BottomEnd)
+                        .navigationBarsPadding()
+                        .padding(end = EDGE, bottom = EDGE + DRUM_H + 12.dp)
+                        .graphicsLayer { translationY = -lift * overviewAnim.value },
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    OverviewButton(open = overview, onClick = { overview = !overview })
+                    MyLocationButton(active = false, onClick = onMyLocation)
+                }
+
+                if (!showPreview) NavDrum(
+                    overview = { overviewAnim.value },
+                    overviewOn = overview,
+                    handle = drum,
+                    onPick = pickFromOverview,
+                    onSelect = selectItem,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .navigationBarsPadding()
+                        .padding(end = EDGE, bottom = EDGE)
+                        .fillMaxWidth(DRUM_WIDTH),
+                )
+
+                if (showPreview) {
+                    RoutePreviewPanel(
+                        state = routeUiState,
+                        onStartGuidance = onStartGuidance,
+                        onEditRoute = openRouteFromPreview,
+                        onClose = onClearRoute,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .onPlaced { previewCoords[0] = it },
+                    )
+                }
+
+                if (routeOpen) {
+                    RouteSheet(
+                        from = routeFrom,
+                        reveal = { routeReveal.value },
+                        top = { sheetTop.value },
+                        expand = { ((thirdTop - sheetTop.value) / (thirdTop - fullTop)).coerceIn(0f, 1f) },
+                        onDrag = { dy -> scope.launch { sheetTop.snapTo((sheetTop.value + dy).coerceIn(fullTop, lowestTop)) } },
+                        onDragStopped = settleSheet,
+                        onExpand = { moveSheet(fullTop) },
+                        onClose = closeRoute,
+                        start = routeStart,
+                        onStartChange = { routeStart = it; onRouteFormChanged() },
+                        dest = routeDestination,
+                        onDestChange = { routeDestination = it; onRouteFormChanged() },
+                        option = routeOption,
+                        onOptionChange = { routeOption = it; onRouteFormChanged() },
+                        onAnalyzeRoute = onAnalyzeRoute,
+                        routeUiState = routeUiState,
+                        onStartGuidance = onStartGuidance,
+                    )
+                }
+
+                openPage?.let { page ->
+                    // 커지는 화면의 바깥 그림자: 화면 레이어는 모양대로 잘리므로 그 밖(뒤)에 따로 그림
+                    Spacer(
+                        Modifier
+                            .fillMaxSize()
+                            .graphicsLayer()
+                            .drawBehind {
+                                val p = pageProgress.value
+                                if (p < 1f) {
+                                    val rect = lerp(pageFrom, Rect(Offset.Zero, size), p)
+                                    softShadow.drawRaised(this, rect, alpha = (p * 6f).coerceAtMost(1f) * (1f - p))
+                                }
                             }
-                        }
-                )
-                PageOverlay(
-                    page = page,
-                    settings = settings,
-                    from = pageFrom,
-                    progress = { pageProgress.value },
-                    onBack = closePage,
-                )
+                    )
+                    PageOverlay(
+                        page = page,
+                        settings = settings,
+                        from = pageFrom,
+                        progress = { pageProgress.value },
+                        onBack = closePage,
+                    )
+                }
             }
         }
     }

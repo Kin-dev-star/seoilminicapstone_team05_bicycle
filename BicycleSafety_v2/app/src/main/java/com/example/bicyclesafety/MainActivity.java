@@ -18,6 +18,7 @@ import java.util.Comparator;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
+import android.view.WindowManager;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
@@ -75,7 +76,16 @@ public class MainActivity extends AppCompatActivity {
     private TextToSpeech textToSpeech;
     private boolean ttsReady = false;
     private boolean guidanceActive = false;
-    private int nextGuideStep = 0;
+    // ── 내비게이션 화면 상태 ──
+    private NavigationTracker navTracker;
+    private int lastPreAnnouncedStep = -1;   // "150미터 앞에서 ~" 안내를 한 단계
+    private int lastSpokenStep = -1;         // 회전 직전 안내를 한 단계
+    private int offRouteCount = 0;           // 연속으로 경로를 벗어난 위치 수
+    private long lastRerouteAt = 0;
+    private boolean rerouting = false;
+    private Location previousNavLocation;
+    private static final double OFF_ROUTE_METERS = 40.0;
+    private static final int NAV_ZOOM = 17;
     private final Map<String, Long> warningHistory = new HashMap<>();
     private static final int LOCATION_REQUEST = 501;
     private static final double WARNING_DISTANCE_METERS = 150.0;
@@ -317,8 +327,7 @@ public class MainActivity extends AppCompatActivity {
         routeRequestInProgress = false;
         pendingRoute = null;
         routeHazardsVisible.clear();
-        guidanceActive = false;
-        nextGuideStep = 0;
+        if (guidanceActive) stopGuidance(null);
         if (routeLayer != null) routeLayer.removeAll();
         refreshHazardMarkers(null);
         BikeUiBridge.routeCleared();
@@ -403,6 +412,11 @@ public class MainActivity extends AppCompatActivity {
 
     /** RouteLine 레이어만 갱신: 사고 마커는 Label 레이어에 따로 유지됩니다. */
     private boolean showRouteOnMap(KakaoRouteRepository.Result result) {
+        return showRouteOnMap(result, true);
+    }
+
+    /** @param fitCamera false면 안내 중 재탐색처럼 카메라를 현재 위치에 둔 채 선만 바꿉니다. */
+    private boolean showRouteOnMap(KakaoRouteRepository.Result result, boolean fitCamera) {
         // Map loading is asynchronous: keep the result until onMapReady() calls us.
         if (activeMap == null || routeLayer == null) return true;
         List<LatLng> points = new ArrayList<>();
@@ -427,10 +441,12 @@ public class MainActivity extends AppCompatActivity {
                     .setStyles(styles.getStyles(0));
             routeLayer.addRouteLine(RouteLineOptions.from(segment).setStylesSet(styles));
             // Show the entire result after the sheet is closed. Include map padding.
-            LatLng southWest = LatLng.from(minLat, minLng);
-            LatLng northEast = LatLng.from(maxLat, maxLng);
-            activeMap.moveCamera(CameraUpdateFactory.fitMapPoints(
-                    new LatLng[]{southWest, northEast}, 110));
+            if (fitCamera) {
+                LatLng southWest = LatLng.from(minLat, minLng);
+                LatLng northEast = LatLng.from(maxLat, maxLng);
+                activeMap.moveCamera(CameraUpdateFactory.fitMapPoints(
+                        new LatLng[]{southWest, northEast}, 110));
+            }
             return true;
         } catch (Exception error) {
             Log.e(TAG, "경로선 표시 오류", error);
@@ -494,7 +510,9 @@ public class MainActivity extends AppCompatActivity {
                 Toast.makeText(this, "기기의 위치 서비스(GPS)를 켜주세요.", Toast.LENGTH_LONG).show();
                 return;
             }
-            locationManager.requestLocationUpdates(provider, 2500L, 5f, locationListener, Looper.getMainLooper());
+            // 길 안내 중에는 1초마다, 평소에는 2.5초·5m마다 위치를 받습니다.
+            locationManager.requestLocationUpdates(provider, guidanceActive ? 1000L : 2500L,
+                    guidanceActive ? 0f : 5f, locationListener, Looper.getMainLooper());
             Toast.makeText(this, "현재 위치 확인 중 · 에뮬레이터는 위치 설정으로 테스트", Toast.LENGTH_SHORT).show();
         } catch (SecurityException error) {
             Toast.makeText(this, "위치 권한을 다시 확인해 주세요.", Toast.LENGTH_LONG).show();
@@ -520,6 +538,7 @@ public class MainActivity extends AppCompatActivity {
                 centerOnNextLocation = false;
             }
         }
+        if (guidanceActive) updateNavigation(location);
         // 정확도가 확인되고 오차 80m 이하인 좌표에만 시연용 근접 경고를 적용합니다.
         if (!location.hasAccuracy() || location.getAccuracy() > 80f) {
             BikeUiBridge.showProximityWarning("GPS 정확도를 확인할 수 없거나 오차가 커서 위험 접근 판별을 보류했습니다.");
@@ -543,13 +562,6 @@ public class MainActivity extends AppCompatActivity {
         } else {
             BikeUiBridge.showProximityWarning(null);
         }
-        if (guidanceActive && pendingRoute != null && nextGuideStep < pendingRoute.guideSteps.size()) {
-            KakaoRouteRepository.GuideStep step = pendingRoute.guideSteps.get(nextGuideStep);
-            if (distanceMeters(location.getLatitude(),location.getLongitude(),step.latitude,step.longitude) < 55) {
-                speak(step.guidance);
-                nextGuideStep++;
-            }
-        }
     }
 
     private void drawCurrentLocation(Location location) {
@@ -567,18 +579,25 @@ public class MainActivity extends AppCompatActivity {
 
     /** 사용자가 현재 위치 버튼을 누른 경우에만 지도 중심 이동; 안내 중 지도 자동 추적 아님. */
     private void moveCameraToLocation(Location location) {
+        moveCameraToLocation(location, 15);
+    }
+
+    private void moveCameraToLocation(Location location, int zoomLevel) {
         if (activeMap == null) return;
         try {
             activeMap.moveCamera(CameraUpdateFactory.newCenterPosition(
-                    LatLng.from(location.getLatitude(), location.getLongitude()), 15));
+                    LatLng.from(location.getLatitude(), location.getLongitude()), zoomLevel));
         } catch (Exception error) {
             Log.w(TAG, "현재 위치로 지도 이동 실패", error);
         }
     }
 
-    /** 안내 시작: 첫 문구 TTS + 현재 위치 추적. 전체 내비게이션 엔진이 아닌 기능 시연용. */
+    /**
+     * 안내 시작: 내비게이션 화면으로 전환하고 현재 위치를 1초마다 추적합니다.
+     * 회전 안내·남은 거리·도착 판단은 NavigationTracker가 계산합니다. (시연용, 실도로 내비 아님)
+     */
     public void onStartGuidanceRequested() {
-        if (pendingRoute == null || pendingRoute.guideSteps.isEmpty()) {
+        if (pendingRoute == null || pendingRoute.points.size() < 2) {
             Toast.makeText(this, "먼저 경로를 분석해 주세요.", Toast.LENGTH_SHORT).show();
             return;
         }
@@ -589,10 +608,192 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         guidanceActive = true;
-        nextGuideStep = 1;
-        speak("자전거 경로 안내를 시작합니다. " + pendingRoute.guideSteps.get(0).guidance);
+        navTracker = new NavigationTracker(pendingRoute.points, pendingRoute.guideSteps);
+        resetNavAnnouncements();
+        offRouteCount = 0;
+        rerouting = false;
+        previousNavLocation = null;
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        BikeUiBridge.navStarted(pendingRoute.destinationName, pendingRoute.durationSeconds,
+                pendingRoute.distanceMeters, hazardFractions());
+        BikeUiBridge.navMessage("경로 안내를 시작합니다.");
+        speak("자전거 경로 안내를 시작합니다. "
+                + (pendingRoute.guideSteps.isEmpty() ? "" : pendingRoute.guideSteps.get(0).guidance));
         trackingLocation = true;
+        centerOnNextLocation = false;
         startLocationUpdates();
+        if (lastLocation != null) updateNavigation(lastLocation);
+    }
+
+    /** 내비게이션 화면의 종료 버튼 */
+    public void onEndGuidanceRequested() {
+        if (guidanceActive) stopGuidance("경로 안내를 종료합니다.");
+    }
+
+    /** 내비게이션 화면의 재탐색 버튼 */
+    public void onRerouteRequested() {
+        if (!guidanceActive) return;
+        if (lastLocation == null) {
+            BikeUiBridge.navMessage("현재 위치를 확인하는 중입니다.");
+            return;
+        }
+        requestReroute(lastLocation, false);
+    }
+
+    private void stopGuidance(String spoken) {
+        guidanceActive = false;
+        navTracker = null;
+        rerouting = false;
+        offRouteCount = 0;
+        previousNavLocation = null;
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        BikeUiBridge.navEnded();
+        if (spoken != null) speak(spoken);
+        // 안내가 끝나면 전체 경로가 보이게 되돌리고, 위치 갱신 간격도 평소대로
+        if (pendingRoute != null) showRouteOnMap(pendingRoute, true);
+        if (trackingLocation && hasLocationPermission()) startLocationUpdates();
+    }
+
+    private void resetNavAnnouncements() {
+        lastPreAnnouncedStep = -1;
+        lastSpokenStep = -1;
+    }
+
+    /** 경로 주변 사고다발지역의 경로상 위치 (오른쪽 진행 막대 표시용, 0~1) */
+    private float[] hazardFractions() {
+        if (navTracker == null) return new float[0];
+        float[] result = new float[routeHazardsVisible.size()];
+        for (int i = 0; i < result.length; i++) {
+            RiskPoint p = routeHazardsVisible.get(i);
+            result[i] = (float) navTracker.fractionAlong(p.latitude, p.longitude);
+        }
+        return result;
+    }
+
+    private void updateNavigation(Location location) {
+        if (navTracker == null || pendingRoute == null) return;
+        moveCameraToLocation(location, NAV_ZOOM);
+        NavigationTracker.Snapshot snap = navTracker.update(location.getLatitude(), location.getLongitude());
+        boolean accurate = location.hasAccuracy() && location.getAccuracy() <= 35f;
+        boolean offRoute = accurate && snap.offRouteMeters > OFF_ROUTE_METERS;
+
+        if (snap.arrived && !offRoute) {
+            stopGuidance("목적지에 도착했습니다. 경로 안내를 종료합니다.");
+            Toast.makeText(this, "목적지에 도착했습니다.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        // GPS 튐을 피하려고 3번 연속 벗어났을 때만 자동 재탐색 (15초 간격)
+        offRouteCount = offRoute ? offRouteCount + 1 : 0;
+        if (offRouteCount >= 3 && !rerouting
+                && SystemClock.elapsedRealtime() - lastRerouteAt > 15000) {
+            requestReroute(location, true);
+        }
+
+        List<KakaoRouteRepository.GuideStep> steps = navTracker.getSteps();
+        NavigationTracker.Maneuver maneuver = NavigationTracker.Maneuver.ARRIVE;
+        String instruction = "목적지까지 이동";
+        if (snap.nextStepIndex >= 0) {
+            instruction = steps.get(snap.nextStepIndex).guidance;
+            maneuver = NavigationTracker.maneuverOf(instruction);
+        }
+        String following = null;
+        if (snap.followingStepIndex >= 0) {
+            following = NavigationTracker.maneuverOf(steps.get(snap.followingStepIndex).guidance).name();
+        }
+        double total = Math.max(1.0, navTracker.getTotalMeters());
+        int remainingSeconds = (int) Math.round(pendingRoute.durationSeconds * (snap.remainingMeters / total));
+        BikeUiBridge.navProgress(maneuver.name(), NavigationTracker.labelOf(maneuver), instruction,
+                (int) Math.round(snap.distanceToNext), following, (int) Math.round(snap.followingDistance),
+                (int) Math.round(snap.remainingMeters), remainingSeconds, speedKmh(location),
+                (float) snap.progress, offRoute);
+        announceGuidance(snap, steps);
+        previousNavLocation = new Location(location);
+    }
+
+    /** 회전 150m 전 예고 1번 + 30m 전 1번. 같은 문구를 반복하지 않습니다. */
+    private void announceGuidance(NavigationTracker.Snapshot snap,
+                                  List<KakaoRouteRepository.GuideStep> steps) {
+        if (snap.nextStepIndex < 0 || rerouting) return;
+        int index = snap.nextStepIndex;
+        String guidance = steps.get(index).guidance;
+        double d = snap.distanceToNext;
+        if (d <= 35 && lastSpokenStep != index) {
+            lastSpokenStep = index;
+            lastPreAnnouncedStep = index;
+            speakQueued(guidance);
+        } else if (d > 60 && d <= 160 && lastPreAnnouncedStep != index) {
+            lastPreAnnouncedStep = index;
+            long rounded = Math.round(d / 10.0) * 10;
+            speakQueued(rounded + "미터 앞에서 " + guidance);
+        }
+    }
+
+    private int speedKmh(Location location) {
+        if (location.hasSpeed()) return Math.max(0, Math.round(location.getSpeed() * 3.6f));
+        if (previousNavLocation == null) return -1;
+        long dtMs = location.getTime() - previousNavLocation.getTime();
+        if (dtMs <= 0) return -1;
+        double kmh = previousNavLocation.distanceTo(location) / (dtMs / 1000.0) * 3.6;
+        return kmh > 80 ? -1 : (int) Math.round(kmh);
+    }
+
+    /** 경로를 벗어났을 때 현재 위치에서 같은 도착지로 다시 찾습니다. */
+    private void requestReroute(Location from, boolean automatic) {
+        if (rerouting || pendingRoute == null) return;
+        if (BuildConfig.KAKAO_REST_API_KEY.isEmpty()) {
+            BikeUiBridge.navMessage("REST API 키가 없어 재탐색할 수 없습니다.");
+            return;
+        }
+        rerouting = true;
+        lastRerouteAt = SystemClock.elapsedRealtime();
+        BikeUiBridge.navRerouting(true);
+        if (automatic) speakQueued("경로를 벗어났습니다. 경로를 다시 탐색합니다.");
+        final KakaoRouteRepository.Result previous = pendingRoute;
+        final double lat = from.getLatitude();
+        final double lng = from.getLongitude();
+        final int revision = routeRequestRevision;
+        final List<RiskPoint> currentHazards = new ArrayList<>(hazardPoints);
+        routeWorker.execute(() -> {
+            try {
+                KakaoRouteRepository.Result result = KakaoRouteRepository.rerouteFrom(
+                        BuildConfig.KAKAO_REST_API_KEY, lat, lng, previous);
+                List<RiskPoint> nearby = new ArrayList<>();
+                for (RiskPoint hazard : currentHazards) {
+                    if (distanceToRoute(hazard, result.points) <= ROUTE_HAZARD_METERS) nearby.add(hazard);
+                }
+                runOnUiThread(() -> {
+                    rerouting = false;
+                    BikeUiBridge.navRerouting(false);
+                    if (isDestroyed() || revision != routeRequestRevision || !guidanceActive) return;
+                    offRouteCount = 0;
+                    pendingRoute = result;
+                    routeHazardsVisible.clear();
+                    routeHazardsVisible.addAll(nearby);
+                    refreshHazardMarkers(routeHazardsVisible);
+                    showRouteOnMap(result, false);
+                    navTracker = new NavigationTracker(result.points, result.guideSteps);
+                    resetNavAnnouncements();
+                    BikeUiBridge.navRouteReplaced(result.durationSeconds, result.distanceMeters, hazardFractions());
+                    BikeUiBridge.navMessage("새 경로로 안내합니다.");
+                    if (lastLocation != null) updateNavigation(lastLocation);
+                });
+            } catch (Exception error) {
+                Log.w(TAG, "경로 재탐색 실패", error);
+                runOnUiThread(() -> {
+                    rerouting = false;
+                    BikeUiBridge.navRerouting(false);
+                    if (isDestroyed() || !guidanceActive) return;
+                    BikeUiBridge.navMessage("재탐색 실패 · 네트워크를 확인해 주세요.");
+                });
+            }
+        });
+    }
+
+    /** 길 안내 문구는 앞 안내를 끊지 않고 이어서 읽습니다. */
+    private void speakQueued(String message) {
+        if (ttsReady && textToSpeech != null) {
+            textToSpeech.speak(message, TextToSpeech.QUEUE_ADD, null, "nav_" + SystemClock.uptimeMillis());
+        }
     }
 
     private void speak(String message) {

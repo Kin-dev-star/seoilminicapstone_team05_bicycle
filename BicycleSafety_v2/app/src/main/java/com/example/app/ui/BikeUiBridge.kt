@@ -42,6 +42,42 @@ data class RouteUiState(
     val error: Boolean = false,
     val routeHazards: Int? = null,
     val hazardDataSource: String = "",
+    /** 경로 미리보기 카드용: "자전거도로 우선" / "최단 경로", 출발·도착 이름 */
+    val modeLabel: String = "",
+    val startName: String = "",
+    val endName: String = "",
+)
+
+/**
+ * 길 안내(내비게이션) 화면 상태. Java MainActivity가 위치가 바뀔 때마다 갱신합니다.
+ * maneuver 값은 NavigationTracker.Maneuver 이름 (LEFT, RIGHT, STRAIGHT, ...).
+ */
+data class NavUiState(
+    val active: Boolean = false,
+    /** 안내 시작 후 첫 위치를 받았는지 */
+    val hasFix: Boolean = false,
+    val maneuver: String = "STRAIGHT",
+    val maneuverLabel: String = "",
+    val instruction: String = "",
+    /** 다음 안내 지점까지 남은 거리 (m) */
+    val distanceToNext: Int = 0,
+    /** 그다음 안내 (없으면 null) */
+    val nextManeuver: String? = null,
+    val nextDistance: Int = 0,
+    val remainingMeters: Int = 0,
+    val remainingSeconds: Int = 0,
+    /** 현재 속도 km/h (모르면 -1) */
+    val speedKmh: Int = -1,
+    /** 진행률 0~1 */
+    val progress: Float = 0f,
+    /** 경로 주변 사고다발지역의 경로상 위치 0~1 */
+    val hazardMarks: List<Float> = emptyList(),
+    val offRoute: Boolean = false,
+    val rerouting: Boolean = false,
+    val destination: String = "",
+    /** 화면 아래 잠깐 보이는 알림 ("경로 안내를 시작합니다." 등) */
+    val message: String? = null,
+    val messageId: Int = 0,
 )
 
 /** Only place that links the Java map/feature layer with the new Compose design. */
@@ -50,6 +86,7 @@ object BikeUiBridge {
     private var safetyRequired by mutableStateOf(false)
     private var routeUiState by mutableStateOf(RouteUiState())
     private var proximityWarning by mutableStateOf<String?>(null)
+    private var navUiState by mutableStateOf(NavUiState())
 
     @JvmStatic
     fun routeStarted() { routeUiState = RouteUiState(loading = true, message = "장소 검색 및 자전거 경로 조회 중…") }
@@ -62,9 +99,58 @@ object BikeUiBridge {
             message = "$mode · $startName → $endName\n" +
                     (if (routeHazards < 0) "사고 데이터가 준비되지 않아 주변 사고 이력을 확인하지 못했습니다.\n실제 안전 회피 계산 미적용 · 첫 번째 장소 검색 결과 사용"
                     else "경로 주변 150m 이내 과거 사고다발지역: ${routeHazards}곳 ($hazardDataSource)\n실제 안전 회피 계산 미적용 · 첫 번째 장소 검색 결과 사용"),
-            routeHazards = routeHazards, hazardDataSource = hazardDataSource
+            routeHazards = routeHazards, hazardDataSource = hazardDataSource,
+            modeLabel = mode, startName = startName, endName = endName,
         )
     }
+
+    // ── 길 안내 화면 (MainActivity → Compose) ──
+
+    @JvmStatic
+    fun navStarted(destination: String, durationSeconds: Int, distanceMeters: Int, hazardMarks: FloatArray) {
+        navUiState = NavUiState(
+            active = true, destination = destination,
+            remainingMeters = distanceMeters, remainingSeconds = durationSeconds,
+            hazardMarks = hazardMarks.toList(),
+        )
+    }
+
+    @JvmStatic
+    fun navProgress(
+        maneuver: String, maneuverLabel: String, instruction: String, distanceToNext: Int,
+        nextManeuver: String?, nextDistance: Int, remainingMeters: Int, remainingSeconds: Int,
+        speedKmh: Int, progress: Float, offRoute: Boolean,
+    ) {
+        if (!navUiState.active) return
+        navUiState = navUiState.copy(
+            hasFix = true, maneuver = maneuver, maneuverLabel = maneuverLabel, instruction = instruction,
+            distanceToNext = distanceToNext, nextManeuver = nextManeuver, nextDistance = nextDistance,
+            remainingMeters = remainingMeters, remainingSeconds = remainingSeconds,
+            speedKmh = speedKmh, progress = progress, offRoute = offRoute,
+        )
+    }
+
+    @JvmStatic
+    fun navRerouting(rerouting: Boolean) {
+        if (navUiState.active) navUiState = navUiState.copy(rerouting = rerouting)
+    }
+
+    @JvmStatic
+    fun navRouteReplaced(durationSeconds: Int, distanceMeters: Int, hazardMarks: FloatArray) {
+        if (!navUiState.active) return
+        navUiState = navUiState.copy(
+            remainingMeters = distanceMeters, remainingSeconds = durationSeconds,
+            hazardMarks = hazardMarks.toList(), offRoute = false, progress = 0f,
+        )
+    }
+
+    @JvmStatic
+    fun navMessage(message: String) {
+        navUiState = navUiState.copy(message = message, messageId = navUiState.messageId + 1)
+    }
+
+    @JvmStatic
+    fun navEnded() { navUiState = NavUiState() }
 
     @JvmStatic
     fun routeFailed(message: String) { routeUiState = RouteUiState(message = message, error = true) }
@@ -96,6 +182,10 @@ object BikeUiBridge {
                 routeUiState = routeUiState,
                 onStartGuidance = { activity.onStartGuidanceRequested() },
                 proximityWarning = proximityWarning,
+                navUiState = navUiState,
+                onEndGuidance = { activity.onEndGuidanceRequested() },
+                onReroute = { activity.onRerouteRequested() },
+                onClearRoute = { activity.onRouteFormChanged() },
             )
             activeRiskPoint?.let { point ->
                 HazardDialog(point = point, onDismiss = { activeRiskPoint = null })

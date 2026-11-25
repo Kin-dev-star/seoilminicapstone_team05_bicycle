@@ -48,7 +48,14 @@ KAKAO_REST_API_KEY=카카오디벨로퍼스에서_발급한_REST_API_키
 7. 출발지를 비우거나 출발지·도착지를 같게 입력 → 안내 문구 확인
 8. 현재 위치 버튼 → 위치 권한 허용/거부 각각 확인
 9. 에뮬레이터 위치를 사고다발지역 근처로 설정 → 접근 경고 문구와 한국어 TTS 확인
-10. 경로 결과 후 `안내 시작` → 첫 경로 안내 문구 확인
+10. 경로 분석이 끝나면 설정 창이 닫히고 지도에 전체 경로 + 아래 **경로 미리보기 카드**(시간·거리·사고다발지역 수)가 표시되는지 확인
+11. 미리보기 카드의 `안내 시작` → **길 안내 화면**으로 바뀌는지 확인
+    - 왼쪽 위 파란 카드: 회전 화살표, 다음 안내까지 남은 거리, 그다음 안내
+    - 왼쪽 속도(km/h), 오른쪽 진행 막대(빨간 점 = 경로 주변 사고다발지역)
+    - 아래 카드: 도착 예정 시각, 남은 거리, 재탐색(↻), 종료(✕)
+12. 에뮬레이터 Extended Controls > Location > Routes에서 경로를 재생 → 지도가 현재 위치를 따라가고, 회전 150m 전·30m 전에 음성 안내가 나오는지 확인
+13. 경로에서 40m 이상 벗어나게 위치를 옮김 → "경로를 벗어났어요" 후 자동 재탐색되는지 확인
+14. 목적지 25m 이내 도착 → 안내가 자동 종료되는지 확인
 
 전체 체크리스트와 결과 표는 `docs/03_학교실습_체크리스트.md`에 있습니다. 빌드 오류와 실행 화면은 캡처로 남겨 주세요.
 
@@ -57,13 +64,15 @@ KAKAO_REST_API_KEY=카카오디벨로퍼스에서_발급한_REST_API_키
 | 대상 | 파일 | 역할 |
 |---|---|---|
 | 앱 초기화 | `app/src/main/java/com/example/bicyclesafety/MapApplication.java` | 카카오맵 네이티브 키 초기화 |
-| 지도·마커·GPS·TTS·경로 제어 | `.../bicyclesafety/MainActivity.java` | Java 기능 연결의 중심, 안전 확인 게이트 |
+| 지도·마커·GPS·TTS·경로 제어 | `.../bicyclesafety/MainActivity.java` | Java 기능 연결의 중심, 안전 확인 게이트, 길 안내 시작·종료·재탐색 |
+| 길 안내 계산 | `.../bicyclesafety/NavigationTracker.java` | 현재 위치를 경로선에 투영해 다음 회전까지 거리·남은 거리·경로 이탈·도착 판단 (Android 의존성 없음) |
 | 카카오 검색·경로 API | `.../bicyclesafety/KakaoRouteRepository.java` | 출발지/도착지 검색, 경로 좌표, 안내 문구 |
 | 사고 데이터 입력 | `.../bicyclesafety/RiskDataRepository.java` | 앱 동봉 데이터 / 선택적 HTTPS 팀 서버 API 변환 |
 | 사고 모델 | `.../bicyclesafety/RiskPoint.java` | 사고 건수, 사상자, 좌표, 출처 |
 | Java–Kotlin 연결 | `.../app/ui/BikeUiBridge.kt` | 화면 상태와 Java 함수, Kakao MapView의 유일한 연결점 |
 | 앱 화면 구성 | `.../app/ui/BikeApp.kt` | 로딩 → 메인 화면 전환, 느린 PC 로딩 탈출 처리 |
 | 메인 화면 | `.../app/ui/main/MainScreen.kt` | 원통 메뉴, 경로 시트, GPS·경고 표시, 테마 |
+| 경로 미리보기·길 안내 화면 | `.../app/ui/main/NavigationScreen.kt` | 경로 분석 후 요약 카드, 안내 중 회전 카드·속도·진행 막대·도착 정보 |
 | 로딩 화면 | `.../app/ui/loading/BikeLoadingScreen.kt` | 자전거 로딩 애니메이션 + 로고 |
 | 디자인 스타일 | `.../app/ui/theme/Soft.kt` | 디자이너 제공 뉴모피즘 스타일 |
 | 동봉 사고 기록 | `app/src/main/assets/seoul_bicycle_accidents.json` | KOROAD 데이터를 팀이 가공한 CSV 2,079행 |
@@ -82,10 +91,12 @@ BicycleSafety_v2/
         RiskDataRepository.java
         RiskPoint.java
         MapApplication.java
+        NavigationTracker.java
       java/com/example/app/ui/
         BikeUiBridge.kt
         BikeApp.kt
         main/MainScreen.kt
+        main/NavigationScreen.kt
         loading/BikeLoadingScreen.kt
         theme/Soft.kt
       assets/seoul_bicycle_accidents.json
@@ -129,6 +140,7 @@ BikeUiBridge.kt → MainScreen.kt (거리·예상 시간 표시)
 - **사고 데이터:** 2,079건은 과거 공공데이터를 가공한 **오프라인 자료**입니다. 지도 성능을 위해 현재 화면 중심 또는 경로 주변 **최대 80개 마커만** 표시합니다. 팀 서버가 연결된 경우에만 서버 자료로 바뀝니다.
 - **경로 위험 표시:** 경로선 주변 **150m 이내** 과거 사고다발지역 개수를 단순히 세어 보여 줄 뿐, 위험도를 추정하거나 경로를 바꾸지 않습니다.
 - **GPS·TTS:** 권한을 받은 뒤 **앱을 사용하는 동안에만** 위치를 요청합니다. 위치 오차가 80m 이하일 때만 150m 반경 접근 경고를 적용하며, 접근 경고와 안내 시작 문구는 시연용입니다. 위치 정확도와 TTS 엔진에 따라 결과가 달라지므로 실제 도로 내비게이션으로 사용하면 안 됩니다. 안내는 **"과거 사고 이력"** 기준이며 실시간 사고나 안전을 보장하지 않습니다.
+- **길 안내 화면:** 카카오 자전거 경로의 안내 문구(guidance)로 회전 방향을 판별하고, 남은 거리·도착 시각은 경로 길이와 예상 시간 비율로 계산합니다. 지도는 북쪽이 위인 상태로 현재 위치를 따라갑니다(진행 방향 회전은 아직 없음). 앱이 화면에 있을 때만 동작하며 화면 꺼짐 방지가 켜집니다. 시연용이며 실제 도로 내비게이션을 대신하지 않습니다.
 - **디자인 v4:** `2026-11-11_ui_v4.zip`의 원통형 메뉴·경로창·페이지·테마를 기반으로 했습니다. v4의 `평지 위주` 옵션은 대응 API가 확정되지 않아 제외했습니다.
 - **계정 기능:** 12/9 작업 대상입니다. 로그인·회원가입 API가 아직 없어 화면에는 **미구현** 안내가 표시됩니다. 카카오 로그인 패치(11/4 기준)는 현재 빌드에 포함하지 않았으며, 검토 내용은 `docs/05_새UI_카카오로그인_통합대기.md`에 있습니다.
 
@@ -153,7 +165,8 @@ BikeUiBridge.kt → MainScreen.kt (거리·예상 시간 표시)
 |---|---|
 | 11/11 최종 UI 통합 작업본 | Java 카카오맵 SDK 연결에 Kotlin/Compose 디자인(로딩 애니메이션, 원통 메뉴, 경로 시트, 설정·마이페이지, 밝은/블랙 테마)을 통합. 실제 Kakao `MapView`를 Compose `AndroidView`로 넣고, 안전 확인 게이트를 새 디자인 팝업으로 다시 그림. 로고를 런처 아이콘과 로딩 화면에 반영 |
 | 11/11 카카오 자전거 경로 설정 통합본 | 경로 분석 버튼에 카카오 장소 검색 + 자전거 경로 REST API를 연결해 실제 경로선 표시. REST API 키를 `local.properties`로 분리 |
-| **12/2 작업 준비본 (현재)** | KOROAD 사고 데이터 2,079건 동봉, 선택적 팀 서버 API, GPS 현재 위치와 150m 접근 경고 TTS, 경로 주변 사고다발지역 개수 표시, UI v4 반영, JDK 25 강제 설정 제거 |
+| 11/25 길 안내 화면 추가 | 경로 분석 후 미리보기 카드, 카카오맵 방식 길 안내 화면(회전 카드·속도·진행 막대·도착 예정 시각), 회전 150m/30m 전 음성 안내, 경로 이탈 시 자동 재탐색, 도착 시 자동 종료 |
+| **12/2 작업 준비본 (기준)** | KOROAD 사고 데이터 2,079건 동봉, 선택적 팀 서버 API, GPS 현재 위치와 150m 접근 경고 TTS, 경로 주변 사고다발지역 개수 표시, UI v4 반영, JDK 25 강제 설정 제거 |
 
 이전 버전의 안내 원문은 `docs/참고_기존안내/`에 있습니다.
 
