@@ -10,8 +10,8 @@
 이 폴더의 파일 두 개를 프로젝트의 같은 위치에 복사합니다.
 
 ```
-제보게시판_김지우/app/src/main/java/com/example/app/ui/main/ReportScreen.kt
-제보게시판_김지우/app/src/main/java/com/example/app/ui/main/ReportSupport.kt
+report-board/app/src/main/java/com/example/app/ui/main/ReportScreen.kt
+report-board/app/src/main/java/com/example/app/ui/main/ReportSupport.kt
         ↓ 복사
 BicycleSafety_v2/app/src/main/java/com/example/app/ui/main/
 ```
