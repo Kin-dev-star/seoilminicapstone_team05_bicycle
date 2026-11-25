@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="map_background">#FFE8EFFB</color>
+    <color name="surface">#FFFFFFFF</color>
+    <color name="stroke">#FFD9E2F0</color>
+    <color name="divider">#FFE6ECF5</color>
+    <color name="primary">#FF1F3A5F</color>
+    <color name="on_primary">#FFFFFFFF</color>
+    <color name="text_primary">#FF1A1F2B</color>
+    <color name="text_secondary">#FF6B7485</color>
+    <color name="number_bg">#FFE8EFFB</color>
+    <color name="input_bg">#FFF4F7FC</color>
+    <color name="tag_danger_bg">#FFDCE6F7</color>
+    <color name="tag_danger_text">#FF1F3A5F</color>
+    <color name="tag_neutral_bg">#FFF1F3F7</color>
+    <color name="result_bg">#FFF4F7FC</color>
+    <color name="risk_low">#FFC9D9F2</color>
+    <color name="risk_mid">#FF7FA3D6</color>
+    <color name="risk_high">#FF2D5A9A</color>
+</resources>

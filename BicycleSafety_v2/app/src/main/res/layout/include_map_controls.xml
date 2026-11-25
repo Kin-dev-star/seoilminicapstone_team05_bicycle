@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 지도 우측 컨트롤: 확대 / 축소 / 현재 위치 (세 화면 공통) -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:orientation="vertical">
+
+    <ImageButton
+        android:id="@+id/btn_zoom_in"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:background="@drawable/bg_button_small"
+        android:contentDescription="확대"
+        android:padding="10dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_plus" />
+
+    <ImageButton
+        android:id="@+id/btn_zoom_out"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_marginTop="4dp"
+        android:background="@drawable/bg_button_small"
+        android:contentDescription="축소"
+        android:padding="10dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_minus" />
+
+    <ImageButton
+        android:id="@+id/btn_my_location"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_marginTop="12dp"
+        android:background="@drawable/bg_button_small"
+        android:contentDescription="현재 위치"
+        android:padding="10dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_my_location" />
+</LinearLayout>

@@ -1,0 +1,7 @@
+# Android Studio가 각 PC의 SDK 경로를 local.properties에 만듭니다.
+# 기존 sdk.dir은 지우지 마세요. 아래 설정만 추가합니다.
+# 이 파일은 예시이며 실제 키를 여기에 저장하거나 GitHub에 올리지 마세요.
+KAKAO_NATIVE_APP_KEY=PASTE_NATIVE_APP_KEY_HERE
+KAKAO_REST_API_KEY=PASTE_REST_API_KEY_HERE
+# 팀 서버가 HTTPS JSON 응답 형식으로 준비된 경우에만 설정
+# TEAM_HAZARD_API_URL=https://example.org/api/hazards
