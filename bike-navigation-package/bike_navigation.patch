@@ -1,0 +1,1565 @@
+diff --git a/app/src/main/java/com/example/app/ui/BikeApp.kt b/app/src/main/java/com/example/app/ui/BikeApp.kt
+index 6ce6dbe..b13e4a1 100755
+--- a/app/src/main/java/com/example/app/ui/BikeApp.kt
++++ b/app/src/main/java/com/example/app/ui/BikeApp.kt
+@@ -49,6 +49,10 @@ fun BikeApp(
+     routeUiState: RouteUiState,
+     onStartGuidance: () -> Unit,
+     proximityWarning: String?,
++    navUiState: NavUiState = NavUiState(),
++    onEndGuidance: () -> Unit = {},
++    onReroute: () -> Unit = {},
++    onClearRoute: () -> Unit = {},
+     loadInitialData: suspend () -> Unit = { delay(1500) },
+ ) {
+     var dataReady by remember { mutableStateOf(false) }
+@@ -95,6 +99,10 @@ fun BikeApp(
+                     routeUiState = routeUiState,
+                     onStartGuidance = onStartGuidance,
+                     proximityWarning = proximityWarning,
++                    navUiState = navUiState,
++                    onEndGuidance = onEndGuidance,
++                    onReroute = onReroute,
++                    onClearRoute = onClearRoute,
+                 )
+             } else {
+                 BikeLoadingScreen(isLoading = !dataReady, onFinished = { showMain = true })
+diff --git a/app/src/main/java/com/example/app/ui/BikeUiBridge.kt b/app/src/main/java/com/example/app/ui/BikeUiBridge.kt
+index 6261acc..d4bb198 100755
+--- a/app/src/main/java/com/example/app/ui/BikeUiBridge.kt
++++ b/app/src/main/java/com/example/app/ui/BikeUiBridge.kt
+@@ -42,6 +42,42 @@ data class RouteUiState(
+     val error: Boolean = false,
+     val routeHazards: Int? = null,
+     val hazardDataSource: String = "",
++    /** 경로 미리보기 카드용: "자전거도로 우선" / "최단 경로", 출발·도착 이름 */
++    val modeLabel: String = "",
++    val startName: String = "",
++    val endName: String = "",
++)
++
++/**
++ * 길 안내(내비게이션) 화면 상태. Java MainActivity가 위치가 바뀔 때마다 갱신합니다.
++ * maneuver 값은 NavigationTracker.Maneuver 이름 (LEFT, RIGHT, STRAIGHT, ...).
++ */
++data class NavUiState(
++    val active: Boolean = false,
++    /** 안내 시작 후 첫 위치를 받았는지 */
++    val hasFix: Boolean = false,
++    val maneuver: String = "STRAIGHT",
++    val maneuverLabel: String = "",
++    val instruction: String = "",
++    /** 다음 안내 지점까지 남은 거리 (m) */
++    val distanceToNext: Int = 0,
++    /** 그다음 안내 (없으면 null) */
++    val nextManeuver: String? = null,
++    val nextDistance: Int = 0,
++    val remainingMeters: Int = 0,
++    val remainingSeconds: Int = 0,
++    /** 현재 속도 km/h (모르면 -1) */
++    val speedKmh: Int = -1,
++    /** 진행률 0~1 */
++    val progress: Float = 0f,
++    /** 경로 주변 사고다발지역의 경로상 위치 0~1 */
++    val hazardMarks: List<Float> = emptyList(),
++    val offRoute: Boolean = false,
++    val rerouting: Boolean = false,
++    val destination: String = "",
++    /** 화면 아래 잠깐 보이는 알림 ("경로 안내를 시작합니다." 등) */
++    val message: String? = null,
++    val messageId: Int = 0,
+ )
+ 
+ /** Only place that links the Java map/feature layer with the new Compose design. */
+@@ -50,6 +86,7 @@ object BikeUiBridge {
+     private var safetyRequired by mutableStateOf(false)
+     private var routeUiState by mutableStateOf(RouteUiState())
+     private var proximityWarning by mutableStateOf<String?>(null)
++    private var navUiState by mutableStateOf(NavUiState())
+ 
+     @JvmStatic
+     fun routeStarted() { routeUiState = RouteUiState(loading = true, message = "장소 검색 및 자전거 경로 조회 중…") }
+@@ -62,10 +99,59 @@ object BikeUiBridge {
+             message = "$mode · $startName → $endName\n" +
+                     (if (routeHazards < 0) "사고 데이터가 준비되지 않아 주변 사고 이력을 확인하지 못했습니다.\n실제 안전 회피 계산 미적용 · 첫 번째 장소 검색 결과 사용"
+                     else "경로 주변 150m 이내 과거 사고다발지역: ${routeHazards}곳 ($hazardDataSource)\n실제 안전 회피 계산 미적용 · 첫 번째 장소 검색 결과 사용"),
+-            routeHazards = routeHazards, hazardDataSource = hazardDataSource
++            routeHazards = routeHazards, hazardDataSource = hazardDataSource,
++            modeLabel = mode, startName = startName, endName = endName,
++        )
++    }
++
++    // ── 길 안내 화면 (MainActivity → Compose) ──
++
++    @JvmStatic
++    fun navStarted(destination: String, durationSeconds: Int, distanceMeters: Int, hazardMarks: FloatArray) {
++        navUiState = NavUiState(
++            active = true, destination = destination,
++            remainingMeters = distanceMeters, remainingSeconds = durationSeconds,
++            hazardMarks = hazardMarks.toList(),
++        )
++    }
++
++    @JvmStatic
++    fun navProgress(
++        maneuver: String, maneuverLabel: String, instruction: String, distanceToNext: Int,
++        nextManeuver: String?, nextDistance: Int, remainingMeters: Int, remainingSeconds: Int,
++        speedKmh: Int, progress: Float, offRoute: Boolean,
++    ) {
++        if (!navUiState.active) return
++        navUiState = navUiState.copy(
++            hasFix = true, maneuver = maneuver, maneuverLabel = maneuverLabel, instruction = instruction,
++            distanceToNext = distanceToNext, nextManeuver = nextManeuver, nextDistance = nextDistance,
++            remainingMeters = remainingMeters, remainingSeconds = remainingSeconds,
++            speedKmh = speedKmh, progress = progress, offRoute = offRoute,
+         )
+     }
+ 
++    @JvmStatic
++    fun navRerouting(rerouting: Boolean) {
++        if (navUiState.active) navUiState = navUiState.copy(rerouting = rerouting)
++    }
++
++    @JvmStatic
++    fun navRouteReplaced(durationSeconds: Int, distanceMeters: Int, hazardMarks: FloatArray) {
++        if (!navUiState.active) return
++        navUiState = navUiState.copy(
++            remainingMeters = distanceMeters, remainingSeconds = durationSeconds,
++            hazardMarks = hazardMarks.toList(), offRoute = false, progress = 0f,
++        )
++    }
++
++    @JvmStatic
++    fun navMessage(message: String) {
++        navUiState = navUiState.copy(message = message, messageId = navUiState.messageId + 1)
++    }
++
++    @JvmStatic
++    fun navEnded() { navUiState = NavUiState() }
++
+     @JvmStatic
+     fun routeFailed(message: String) { routeUiState = RouteUiState(message = message, error = true) }
+ 
+@@ -96,6 +182,10 @@ object BikeUiBridge {
+                 routeUiState = routeUiState,
+                 onStartGuidance = { activity.onStartGuidanceRequested() },
+                 proximityWarning = proximityWarning,
++                navUiState = navUiState,
++                onEndGuidance = { activity.onEndGuidanceRequested() },
++                onReroute = { activity.onRerouteRequested() },
++                onClearRoute = { activity.onRouteFormChanged() },
+             )
+             activeRiskPoint?.let { point ->
+                 HazardDialog(point = point, onDismiss = { activeRiskPoint = null })
+diff --git a/app/src/main/java/com/example/app/ui/main/MainScreen.kt b/app/src/main/java/com/example/app/ui/main/MainScreen.kt
+index e1753e9..9feae9e 100755
+--- a/app/src/main/java/com/example/app/ui/main/MainScreen.kt
++++ b/app/src/main/java/com/example/app/ui/main/MainScreen.kt
+@@ -121,6 +121,7 @@ import androidx.compose.ui.unit.dp
+ import androidx.compose.ui.unit.sp
+ import com.example.app.ui.theme.LocalSoftShadow
+ import com.example.app.ui.theme.Soft
++import com.example.app.ui.NavUiState
+ import com.example.app.ui.RouteUiState
+ import java.util.Locale
+ import com.example.app.ui.theme.SoftShadow
+@@ -199,6 +200,10 @@ fun MainScreen(
+     routeUiState: RouteUiState = RouteUiState(),
+     onStartGuidance: () -> Unit = {},
+     proximityWarning: String? = null,
++    navUiState: NavUiState = NavUiState(),
++    onEndGuidance: () -> Unit = {},
++    onReroute: () -> Unit = {},
++    onClearRoute: () -> Unit = {},
+ ) {
+     val density = LocalDensity.current
+     val softShadow = remember(density) { SoftShadow(density, base = BAR_H, corner = CORNER) }
+@@ -312,7 +317,42 @@ fun MainScreen(
+         drum.bringToFront(item)
+     }
+ 
+-    BackHandler(enabled = openPage != null || routeOpen || overview) {
++    // ── 경로 미리보기 · 길 안내 ──
++    val routeReady = routeUiState.distanceMeters != null && !routeUiState.loading && !routeUiState.error
++    val navActive = navUiState.active
++    val previewCoords = remember { arrayOfNulls<LayoutCoordinates>(1) }
++    // 경로 분석이 끝나면 창을 닫고 지도 위 전체 경로 + 아래 요약 카드를 보여줌 (카카오맵 방식)
++    LaunchedEffect(routeReady) {
++        if (routeReady && routeOpen) closeRoute()
++    }
++    // 안내가 시작되면 열린 창·메뉴를 모두 닫고 내비게이션 화면만 남김
++    LaunchedEffect(navActive) {
++        if (navActive) {
++            focusManager.clearFocus()
++            overview = false
++            routeOpen = false
++            routeReveal.snapTo(0f)
++            openPage = null
++            pageProgress.snapTo(0f)
++        }
++    }
++    // 미리보기 카드의 "경로 변경": 카드 자리에서 경로 설정 창이 열림
++    val openRouteFromPreview: () -> Unit = {
++        val root = rootCoords[0]
++        val panel = previewCoords[0]
++        if (root != null && panel != null && panel.isAttached && !routeOpen) {
++            routeFrom = root.localBoundingBoxOf(panel)
++            routeOpen = true
++            scope.launch {
++                sheetTop.snapTo(thirdTop)
++                routeReveal.snapTo(0f)
++                routeReveal.animateTo(1f, tween(420, easing = FastOutSlowInEasing))
++            }
++        }
++    }
++    val showPreview = routeReady && !routeOpen && openPage == null && !navActive
++
++    BackHandler(enabled = !navActive && (openPage != null || routeOpen || overview)) {
+         when {
+             openPage != null -> closePage()
+             routeOpen && sheetTop.value < thirdTop - 1f -> moveSheet(thirdTop)   // 상세정보 보는 중이면 1/3로
+@@ -341,92 +381,114 @@ fun MainScreen(
+                 )
+             }
+ 
+-            // GPS 접근 시 화면 경고. 서버 판별이 아닌 과거 사고 지점과의 근접 테스트입니다.
+-            proximityWarning?.let { warning ->
+-                Text(
+-                    warning,
+-                    modifier = Modifier
+-                        .align(Alignment.TopCenter)
+-                        .statusBarsPadding()
+-                        .padding(horizontal = 16.dp, vertical = 8.dp)
+-                        .clip(CardShape)
+-                        .background(Color(0xFF502626))
+-                        .padding(12.dp),
+-                    color = Color.White,
+-                    fontSize = 13.sp,
++            if (navActive) {
++                // 길 안내 중: 지도 위에 내비게이션 화면만 표시
++                NavigationOverlay(
++                    state = navUiState,
++                    proximityWarning = proximityWarning,
++                    onEnd = onEndGuidance,
++                    onReroute = onReroute,
+                 )
+-            }
+-
+-            // 원통 메뉴 오른쪽 위 작은 버튼들: 모아보기 · 현재 위치 (모아보기를 펼치면 목록 위로 같이 올라감)
+-            val lift = with(density) { (LIST_H - DRUM_H).toPx() }
+-            Row(
+-                Modifier
+-                    .align(Alignment.BottomEnd)
+-                    .navigationBarsPadding()
+-                    .padding(end = EDGE, bottom = EDGE + DRUM_H + 12.dp)
+-                    .graphicsLayer { translationY = -lift * overviewAnim.value },
+-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+-            ) {
+-                OverviewButton(open = overview, onClick = { overview = !overview })
+-                MyLocationButton(active = false, onClick = onMyLocation)
+-            }
++            } else {
++                // GPS 접근 시 화면 경고. 서버 판별이 아닌 과거 사고 지점과의 근접 테스트입니다.
++                proximityWarning?.let { warning ->
++                    Text(
++                        warning,
++                        modifier = Modifier
++                            .align(Alignment.TopCenter)
++                            .statusBarsPadding()
++                            .padding(horizontal = 16.dp, vertical = 8.dp)
++                            .clip(CardShape)
++                            .background(Color(0xFF502626))
++                            .padding(12.dp),
++                        color = Color.White,
++                        fontSize = 13.sp,
++                    )
++                }
+ 
+-            NavDrum(
+-                overview = { overviewAnim.value },
+-                overviewOn = overview,
+-                handle = drum,
+-                onPick = pickFromOverview,
+-                onSelect = selectItem,
+-                modifier = Modifier
+-                    .align(Alignment.BottomEnd)
+-                    .navigationBarsPadding()
+-                    .padding(end = EDGE, bottom = EDGE)
+-                    .fillMaxWidth(DRUM_WIDTH),
+-            )
++                // 원통 메뉴 오른쪽 위 작은 버튼들: 모아보기 · 현재 위치 (모아보기를 펼치면 목록 위로 같이 올라감)
++                val lift = with(density) { (LIST_H - DRUM_H).toPx() }
++                if (!showPreview) Row(
++                    Modifier
++                        .align(Alignment.BottomEnd)
++                        .navigationBarsPadding()
++                        .padding(end = EDGE, bottom = EDGE + DRUM_H + 12.dp)
++                        .graphicsLayer { translationY = -lift * overviewAnim.value },
++                    horizontalArrangement = Arrangement.spacedBy(12.dp),
++                ) {
++                    OverviewButton(open = overview, onClick = { overview = !overview })
++                    MyLocationButton(active = false, onClick = onMyLocation)
++                }
+ 
+-            if (routeOpen) {
+-                RouteSheet(
+-                    from = routeFrom,
+-                    reveal = { routeReveal.value },
+-                    top = { sheetTop.value },
+-                    expand = { ((thirdTop - sheetTop.value) / (thirdTop - fullTop)).coerceIn(0f, 1f) },
+-                    onDrag = { dy -> scope.launch { sheetTop.snapTo((sheetTop.value + dy).coerceIn(fullTop, lowestTop)) } },
+-                    onDragStopped = settleSheet,
+-                    onExpand = { moveSheet(fullTop) },
+-                    onClose = closeRoute,
+-                    start = routeStart,
+-                    onStartChange = { routeStart = it; onRouteFormChanged() },
+-                    dest = routeDestination,
+-                    onDestChange = { routeDestination = it; onRouteFormChanged() },
+-                    option = routeOption,
+-                    onOptionChange = { routeOption = it; onRouteFormChanged() },
+-                    onAnalyzeRoute = onAnalyzeRoute,
+-                    routeUiState = routeUiState,
+-                    onStartGuidance = onStartGuidance,
++                if (!showPreview) NavDrum(
++                    overview = { overviewAnim.value },
++                    overviewOn = overview,
++                    handle = drum,
++                    onPick = pickFromOverview,
++                    onSelect = selectItem,
++                    modifier = Modifier
++                        .align(Alignment.BottomEnd)
++                        .navigationBarsPadding()
++                        .padding(end = EDGE, bottom = EDGE)
++                        .fillMaxWidth(DRUM_WIDTH),
+                 )
+-            }
+ 
+-            openPage?.let { page ->
+-                // 커지는 화면의 바깥 그림자: 화면 레이어는 모양대로 잘리므로 그 밖(뒤)에 따로 그림
+-                Spacer(
+-                    Modifier
+-                        .fillMaxSize()
+-                        .graphicsLayer()
+-                        .drawBehind {
+-                            val p = pageProgress.value
+-                            if (p < 1f) {
+-                                val rect = lerp(pageFrom, Rect(Offset.Zero, size), p)
+-                                softShadow.drawRaised(this, rect, alpha = (p * 6f).coerceAtMost(1f) * (1f - p))
++                if (showPreview) {
++                    RoutePreviewPanel(
++                        state = routeUiState,
++                        onStartGuidance = onStartGuidance,
++                        onEditRoute = openRouteFromPreview,
++                        onClose = onClearRoute,
++                        modifier = Modifier
++                            .align(Alignment.BottomCenter)
++                            .onPlaced { previewCoords[0] = it },
++                    )
++                }
++
++                if (routeOpen) {
++                    RouteSheet(
++                        from = routeFrom,
++                        reveal = { routeReveal.value },
++                        top = { sheetTop.value },
++                        expand = { ((thirdTop - sheetTop.value) / (thirdTop - fullTop)).coerceIn(0f, 1f) },
++                        onDrag = { dy -> scope.launch { sheetTop.snapTo((sheetTop.value + dy).coerceIn(fullTop, lowestTop)) } },
++                        onDragStopped = settleSheet,
++                        onExpand = { moveSheet(fullTop) },
++                        onClose = closeRoute,
++                        start = routeStart,
++                        onStartChange = { routeStart = it; onRouteFormChanged() },
++                        dest = routeDestination,
++                        onDestChange = { routeDestination = it; onRouteFormChanged() },
++                        option = routeOption,
++                        onOptionChange = { routeOption = it; onRouteFormChanged() },
++                        onAnalyzeRoute = onAnalyzeRoute,
++                        routeUiState = routeUiState,
++                        onStartGuidance = onStartGuidance,
++                    )
++                }
++
++                openPage?.let { page ->
++                    // 커지는 화면의 바깥 그림자: 화면 레이어는 모양대로 잘리므로 그 밖(뒤)에 따로 그림
++                    Spacer(
++                        Modifier
++                            .fillMaxSize()
++                            .graphicsLayer()
++                            .drawBehind {
++                                val p = pageProgress.value
++                                if (p < 1f) {
++                                    val rect = lerp(pageFrom, Rect(Offset.Zero, size), p)
++                                    softShadow.drawRaised(this, rect, alpha = (p * 6f).coerceAtMost(1f) * (1f - p))
++                                }
+                             }
+-                        }
+-                )
+-                PageOverlay(
+-                    page = page,
+-                    settings = settings,
+-                    from = pageFrom,
+-                    progress = { pageProgress.value },
+-                    onBack = closePage,
+-                )
++                    )
++                    PageOverlay(
++                        page = page,
++                        settings = settings,
++                        from = pageFrom,
++                        progress = { pageProgress.value },
++                        onBack = closePage,
++                    )
++                }
+             }
+         }
+     }
+diff --git a/app/src/main/java/com/example/app/ui/main/NavigationScreen.kt b/app/src/main/java/com/example/app/ui/main/NavigationScreen.kt
+new file mode 100644
+index 0000000..9afb33d
+--- /dev/null
++++ b/app/src/main/java/com/example/app/ui/main/NavigationScreen.kt
+@@ -0,0 +1,507 @@
++package com.example.app.ui.main
++
++import androidx.activity.compose.BackHandler
++import androidx.compose.foundation.Canvas
++import androidx.compose.foundation.background
++import androidx.compose.foundation.border
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.navigationBarsPadding
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.layout.statusBarsPadding
++import androidx.compose.foundation.layout.width
++import androidx.compose.foundation.layout.widthIn
++import androidx.compose.foundation.shape.CircleShape
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.filled.Close
++import androidx.compose.material.icons.filled.LocationOn
++import androidx.compose.material.icons.filled.Refresh
++import androidx.compose.material.icons.filled.Warning
++import androidx.compose.material3.AlertDialog
++import androidx.compose.material3.Icon
++import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.draw.clip
++import androidx.compose.ui.draw.shadow
++import androidx.compose.ui.geometry.Offset
++import androidx.compose.ui.geometry.Size
++import androidx.compose.ui.geometry.CornerRadius
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.graphics.Path
++import androidx.compose.ui.graphics.StrokeCap
++import androidx.compose.ui.graphics.StrokeJoin
++import androidx.compose.ui.graphics.drawscope.DrawScope
++import androidx.compose.ui.graphics.drawscope.Stroke
++import androidx.compose.ui.semantics.contentDescription
++import androidx.compose.ui.semantics.semantics
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.text.style.TextOverflow
++import androidx.compose.ui.unit.Dp
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.unit.sp
++import com.example.app.ui.NavUiState
++import com.example.app.ui.RouteUiState
++import com.example.app.ui.theme.Soft
++import kotlinx.coroutines.delay
++import java.text.SimpleDateFormat
++import java.util.Date
++import java.util.Locale
++import kotlin.math.hypot
++import kotlin.math.roundToInt
++
++// 카카오맵·네이버지도 길 안내 화면을 참고한 색
++private val NavBlue = Color(0xFF1E6EF5)
++private val NavBlueDark = Color(0xFF1557D0)
++private val NavRed = Color(0xFFD93A3A)
++private val NavAmber = Color(0xFFF2A516)
++private val NavCard = RoundedCornerShape(18.dp)
++
++// ───────────────────────── 경로 미리보기 (경로 분석 직후) ─────────────────────────
++
++/**
++ * 경로 분석이 끝나면 지도에 전체 경로를 보여주고 아래에 띄우는 요약 카드.
++ * 카카오맵의 "실시간 추천 25분 · 7.2km · [안내시작]" 화면과 같은 역할.
++ */
++@Composable
++fun RoutePreviewPanel(
++    state: RouteUiState,
++    onStartGuidance: () -> Unit,
++    onEditRoute: () -> Unit,
++    onClose: () -> Unit,
++    modifier: Modifier = Modifier,
++) {
++    val minutes = ((state.durationSeconds ?: 0) + 59) / 60
++    val (distNumber, distUnit) = formatDistance(state.distanceMeters ?: 0)
++    Column(
++        modifier
++            .fillMaxWidth()
++            .navigationBarsPadding()
++            .padding(12.dp)
++            .shadow(14.dp, RoundedCornerShape(24.dp))
++            .clip(RoundedCornerShape(24.dp))
++            .background(Soft.Base)
++            .padding(start = 20.dp, end = 12.dp, top = 14.dp, bottom = 14.dp)
++    ) {
++        Row(verticalAlignment = Alignment.CenterVertically) {
++            Text(
++                state.modeLabel.ifEmpty { "자전거 경로" },
++                color = NavBlue, fontSize = 15.sp, fontWeight = FontWeight.Bold,
++                modifier = Modifier.weight(1f),
++            )
++            Icon(
++                Icons.Filled.Close, contentDescription = "경로 지우기", tint = Soft.TextSub,
++                modifier = Modifier.clip(CircleShape).clickable(onClick = onClose).padding(8.dp).size(20.dp),
++            )
++        }
++        Row(verticalAlignment = Alignment.Bottom) {
++            Text("$minutes", color = Soft.Text, fontSize = 40.sp, fontWeight = FontWeight.Bold)
++            Text("분", color = Soft.Text, fontSize = 20.sp, modifier = Modifier.padding(start = 2.dp, bottom = 6.dp))
++            Spacer(Modifier.width(14.dp))
++            Text("$distNumber$distUnit", color = Soft.TextSub, fontSize = 18.sp,
++                modifier = Modifier.padding(bottom = 6.dp))
++        }
++        if (state.startName.isNotEmpty() || state.endName.isNotEmpty()) {
++            Text(
++                "${state.startName} → ${state.endName}",
++                color = Soft.TextSub, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
++                modifier = Modifier.padding(end = 8.dp),
++            )
++        }
++        val hazards = state.routeHazards
++        Text(
++            when {
++                hazards == null || hazards < 0 -> "사고 데이터 준비 중 · 실제 사고 회피 계산은 적용되지 않았어요"
++                hazards == 0 -> "경로 주변 150m 이내 과거 사고다발지역 없음"
++                else -> "경로 주변 150m 이내 과거 사고다발지역 ${hazards}곳 · 회피 경로 아님"
++            },
++            color = if ((hazards ?: 0) > 0) NavRed else Soft.TextHint,
++            fontSize = 12.sp,
++            modifier = Modifier.padding(top = 4.dp, end = 8.dp),
++        )
++        Spacer(Modifier.height(14.dp))
++        Row(Modifier.padding(end = 8.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
++            Box(
++                Modifier
++                    .weight(1f)
++                    .height(52.dp)
++                    .clip(RoundedCornerShape(14.dp))
++                    .background(Color(0xFF6B7280))
++                    .clickable(onClick = onEditRoute),
++                contentAlignment = Alignment.Center,
++            ) {
++                Text("경로 변경", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
++            }
++            Row(
++                Modifier
++                    .weight(1.6f)
++                    .height(52.dp)
++                    .clip(RoundedCornerShape(14.dp))
++                    .background(NavBlue)
++                    .clickable(onClick = onStartGuidance),
++                horizontalArrangement = Arrangement.Center,
++                verticalAlignment = Alignment.CenterVertically,
++            ) {
++                ManeuverArrow("STRAIGHT", Color.White, 22.dp)
++                Spacer(Modifier.width(8.dp))
++                Text("안내 시작", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
++            }
++        }
++    }
++}
++
++// ───────────────────────── 길 안내 화면 ─────────────────────────
++
++/**
++ * 안내 시작 후 지도 위에 겹치는 내비게이션 화면.
++ * 왼쪽 위: 다음 회전 카드(화살표·남은 거리) + 그다음 안내, 현재 속도
++ * 오른쪽: 진행 막대(사고다발지역 표시), 아래: 도착 예정 시각·남은 거리·재탐색·종료
++ */
++@Composable
++fun NavigationOverlay(
++    state: NavUiState,
++    proximityWarning: String?,
++    onEnd: () -> Unit,
++    onReroute: () -> Unit,
++    modifier: Modifier = Modifier,
++) {
++    var confirmEnd by remember { mutableStateOf(false) }
++    var toast by remember { mutableStateOf<String?>(null) }
++    LaunchedEffect(state.messageId) {
++        val message = state.message
++        if (message != null) {
++            toast = message
++            delay(2500)
++            toast = null
++        }
++    }
++    BackHandler { confirmEnd = true }
++
++    Box(modifier.fillMaxSize()) {
++        Column(
++            Modifier
++                .align(Alignment.TopStart)
++                .statusBarsPadding()
++                .padding(start = 12.dp, top = 8.dp, end = 56.dp)
++        ) {
++            TurnCard(state)
++            if (state.hasFix && state.nextManeuver != null) {
++                Row(
++                    Modifier
++                        .padding(start = 0.dp)
++                        .clip(RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp))
++                        .background(NavBlueDark)
++                        .padding(horizontal = 16.dp, vertical = 8.dp),
++                    verticalAlignment = Alignment.CenterVertically,
++                ) {
++                    Text("그다음", color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
++                    Spacer(Modifier.width(8.dp))
++                    ManeuverArrow(state.nextManeuver ?: "STRAIGHT", Color.White, 26.dp)
++                    Spacer(Modifier.width(6.dp))
++                    val (n, u) = formatDistance(state.nextDistance)
++                    Text("$n$u", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
++                }
++            }
++            when {
++                state.rerouting -> StatusBanner("경로를 다시 찾는 중…", NavAmber)
++                state.offRoute -> StatusBanner("경로를 벗어났어요", NavAmber)
++            }
++            proximityWarning?.let { StatusBanner(it, NavRed, warningIcon = true) }
++            Spacer(Modifier.height(12.dp))
++            SpeedBadge(state.speedKmh)
++        }
++
++        RouteProgressBar(
++            progress = state.progress,
++            hazardMarks = state.hazardMarks,
++            modifier = Modifier
++                .align(Alignment.CenterEnd)
++                .padding(end = 14.dp)
++                .width(12.dp)
++                .height(280.dp),
++        )
++
++        Column(
++            Modifier
++                .align(Alignment.BottomCenter)
++                .navigationBarsPadding()
++                .padding(12.dp),
++            horizontalAlignment = Alignment.CenterHorizontally,
++        ) {
++            toast?.let {
++                Text(
++                    it,
++                    color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
++                    modifier = Modifier
++                        .padding(bottom = 10.dp)
++                        .clip(RoundedCornerShape(14.dp))
++                        .background(Color(0xE6202226))
++                        .padding(horizontal = 22.dp, vertical = 12.dp),
++                )
++            }
++            BottomInfoCard(state, onReroute = onReroute, onEnd = { confirmEnd = true })
++        }
++    }
++
++    if (confirmEnd) {
++        AlertDialog(
++            onDismissRequest = { confirmEnd = false },
++            title = { Text("길 안내를 종료할까요?") },
++            confirmButton = {
++                TextButton(onClick = { confirmEnd = false; onEnd() }) { Text("종료") }
++            },
++            dismissButton = {
++                TextButton(onClick = { confirmEnd = false }) { Text("계속 안내") }
++            },
++        )
++    }
++}
++
++/** 왼쪽 위 파란 카드: 회전 화살표 + 남은 거리 + 안내 문구 */
++@Composable
++private fun TurnCard(state: NavUiState) {
++    Row(
++        Modifier
++            .widthIn(min = 200.dp, max = 320.dp)
++            .shadow(10.dp, NavCard)
++            .clip(NavCard)
++            .background(NavBlue)
++            .padding(horizontal = 16.dp, vertical = 14.dp)
++            .semantics { contentDescription = "다음 안내 ${state.maneuverLabel} ${state.distanceToNext}미터" },
++        verticalAlignment = Alignment.CenterVertically,
++    ) {
++        ManeuverArrow(state.maneuver, Color.White, 60.dp)
++        Spacer(Modifier.width(14.dp))
++        Column {
++            if (!state.hasFix) {
++                Text("현재 위치 확인 중…", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
++                Text("GPS 신호를 기다리고 있어요", color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp)
++            } else {
++                val (n, u) = formatDistance(state.distanceToNext)
++                Row(verticalAlignment = Alignment.Bottom) {
++                    Text(n, color = Color.White, fontSize = 44.sp, fontWeight = FontWeight.Bold)
++                    Text(u, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold,
++                        modifier = Modifier.padding(start = 2.dp, bottom = 6.dp))
++                }
++                Text(state.maneuverLabel, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
++                if (state.instruction.isNotBlank() && state.instruction != state.maneuverLabel) {
++                    Text(state.instruction, color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp,
++                        maxLines = 1, overflow = TextOverflow.Ellipsis)
++                }
++            }
++        }
++    }
++}
++
++@Composable
++private fun StatusBanner(text: String, color: Color, warningIcon: Boolean = false) {
++    Row(
++        Modifier
++            .padding(top = 8.dp)
++            .widthIn(max = 320.dp)
++            .clip(RoundedCornerShape(12.dp))
++            .background(color)
++            .padding(horizontal = 12.dp, vertical = 9.dp),
++        verticalAlignment = Alignment.CenterVertically,
++    ) {
++        if (warningIcon) {
++            Icon(Icons.Filled.Warning, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
++            Spacer(Modifier.width(6.dp))
++        }
++        Text(text, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
++    }
++}
++
++/** 현재 속도 (km/h). 모르면 "–" */
++@Composable
++private fun SpeedBadge(speedKmh: Int) {
++    Column(
++        Modifier
++            .size(64.dp)
++            .shadow(6.dp, CircleShape)
++            .clip(CircleShape)
++            .background(Color.White)
++            .border(3.dp, NavBlue, CircleShape),
++        verticalArrangement = Arrangement.Center,
++        horizontalAlignment = Alignment.CenterHorizontally,
++    ) {
++        Text(if (speedKmh >= 0) "$speedKmh" else "–", color = Color(0xFF1B1D22), fontSize = 24.sp,
++            fontWeight = FontWeight.Bold)
++        Text("km/h", color = Color(0xFF6E7383), fontSize = 9.sp)
++    }
++}
++
++/** 아래 카드: 재탐색 · 도착지/도착 예정 시각/남은 거리 · 종료 */
++@Composable
++private fun BottomInfoCard(state: NavUiState, onReroute: () -> Unit, onEnd: () -> Unit) {
++    val arrival = remember(state.remainingSeconds) {
++        SimpleDateFormat("a h:mm", Locale.KOREA).format(Date(System.currentTimeMillis() + state.remainingSeconds * 1000L))
++    }
++    val (n, u) = formatDistance(state.remainingMeters)
++    Row(
++        Modifier
++            .fillMaxWidth()
++            .shadow(14.dp, RoundedCornerShape(22.dp))
++            .clip(RoundedCornerShape(22.dp))
++            .background(Soft.Base)
++            .padding(horizontal = 8.dp, vertical = 12.dp),
++        verticalAlignment = Alignment.CenterVertically,
++    ) {
++        Icon(
++            Icons.Filled.Refresh, contentDescription = "경로 재탐색", tint = Soft.Text,
++            modifier = Modifier.clip(CircleShape).clickable(enabled = !state.rerouting, onClick = onReroute)
++                .padding(12.dp).size(26.dp),
++        )
++        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
++            Row(verticalAlignment = Alignment.CenterVertically) {
++                Icon(Icons.Filled.LocationOn, contentDescription = null, tint = NavRed, modifier = Modifier.size(16.dp))
++                Spacer(Modifier.width(2.dp))
++                Text(state.destination.ifEmpty { "목적지" }, color = Soft.TextSub, fontSize = 14.sp,
++                    maxLines = 1, overflow = TextOverflow.Ellipsis)
++            }
++            Row(verticalAlignment = Alignment.Bottom) {
++                Text(arrival, color = Soft.Text, fontSize = 26.sp, fontWeight = FontWeight.Bold)
++                Text(" 도착", color = Soft.TextSub, fontSize = 13.sp, modifier = Modifier.padding(bottom = 4.dp))
++                Spacer(Modifier.width(14.dp))
++                Text(n, color = Soft.Text, fontSize = 26.sp, fontWeight = FontWeight.Bold)
++                Text(u, color = Soft.Text, fontSize = 15.sp, modifier = Modifier.padding(bottom = 3.dp))
++            }
++            Text("남은 시간 약 ${(state.remainingSeconds + 59) / 60}분", color = Soft.TextHint, fontSize = 11.sp)
++        }
++        Icon(
++            Icons.Filled.Close, contentDescription = "안내 종료", tint = Soft.Text,
++            modifier = Modifier.clip(CircleShape).clickable(onClick = onEnd).padding(12.dp).size(26.dp),
++        )
++    }
++}
++
++/**
++ * 오른쪽 세로 진행 막대. 아래가 출발, 위가 도착.
++ * 파란 부분은 남은 경로, 빨간 점은 경로 주변 과거 사고다발지역.
++ */
++@Composable
++private fun RouteProgressBar(progress: Float, hazardMarks: List<Float>, modifier: Modifier = Modifier) {
++    Canvas(modifier) {
++        val w = size.width
++        val h = size.height
++        val p = progress.coerceIn(0f, 1f)
++        fun y(f: Float) = h * (1f - f)
++        drawRoundRect(Color(0xFFD5D8DE), size = Size(w, h), cornerRadius = CornerRadius(w / 2, w / 2))
++        drawRoundRect(
++            NavBlue,
++            topLeft = Offset(0f, 0f),
++            size = Size(w, y(p)),
++            cornerRadius = CornerRadius(w / 2, w / 2),
++        )
++        hazardMarks.forEach { f ->
++            if (f >= p) {
++                drawCircle(Color.White, radius = w * 0.75f, center = Offset(w / 2, y(f)))
++                drawCircle(NavRed, radius = w * 0.55f, center = Offset(w / 2, y(f)))
++            }
++        }
++        drawCircle(NavBlue, radius = w * 1.05f, center = Offset(w / 2, y(p)))
++        drawCircle(Color.White, radius = w * 0.6f, center = Offset(w / 2, y(p)))
++    }
++}
++
++// ───────────────────────── 회전 화살표 ─────────────────────────
++
++/** NavigationTracker.Maneuver 이름에 맞는 화살표를 그립니다 (아이콘 파일 없이 직접 그림). */
++@Composable
++fun ManeuverArrow(maneuver: String, color: Color, size: Dp) {
++    Canvas(Modifier.size(size)) {
++        val s = this.size.minDimension
++        val stroke = Stroke(width = s * 0.13f, cap = StrokeCap.Round, join = StrokeJoin.Round)
++        fun pt(x: Float, y: Float) = Offset(x * s, y * s)
++        fun same(x: Float) = x
++        fun mirror(x: Float) = 1f - x
++        when (maneuver) {
++            "LEFT", "RIGHT" -> {
++                val m: (Float) -> Float = if (maneuver == "LEFT") ::same else ::mirror
++                val path = Path().apply {
++                    moveTo(m(0.62f) * s, 0.95f * s)
++                    lineTo(m(0.62f) * s, 0.50f * s)
++                    quadraticTo(m(0.62f) * s, 0.32f * s, m(0.44f) * s, 0.32f * s)
++                    lineTo(m(0.32f) * s, 0.32f * s)
++                }
++                drawPath(path, color, style = stroke)
++                arrowHead(pt(m(0.08f), 0.32f), if (maneuver == "LEFT") -1f else 1f, 0f, s * 0.24f, color)
++            }
++            "SLIGHT_LEFT", "SLIGHT_RIGHT" -> {
++                val left = maneuver == "SLIGHT_LEFT"
++                val m: (Float) -> Float = if (left) ::same else ::mirror
++                val path = Path().apply {
++                    moveTo(m(0.60f) * s, 0.95f * s)
++                    lineTo(m(0.60f) * s, 0.60f * s)
++                    lineTo(m(0.36f) * s, 0.33f * s)
++                }
++                drawPath(path, color, style = stroke)
++                arrowHead(pt(m(0.20f), 0.15f), if (left) -0.4f else 0.4f, -0.45f, s * 0.24f, color)
++            }
++            "UTURN" -> {
++                val path = Path().apply {
++                    moveTo(0.68f * s, 0.95f * s)
++                    lineTo(0.68f * s, 0.42f * s)
++                    cubicTo(0.68f * s, 0.12f * s, 0.30f * s, 0.12f * s, 0.30f * s, 0.42f * s)
++                    lineTo(0.30f * s, 0.55f * s)
++                }
++                drawPath(path, color, style = stroke)
++                arrowHead(pt(0.30f, 0.80f), 0f, 1f, s * 0.24f, color)
++            }
++            "ARRIVE" -> {
++                drawLine(color, pt(0.30f, 0.92f), pt(0.30f, 0.10f), strokeWidth = s * 0.11f, cap = StrokeCap.Round)
++                val flag = Path().apply {
++                    moveTo(0.30f * s, 0.12f * s)
++                    lineTo(0.80f * s, 0.28f * s)
++                    lineTo(0.30f * s, 0.46f * s)
++                    close()
++                }
++                drawPath(flag, color)
++            }
++            else -> { // STRAIGHT, START
++                drawLine(color, pt(0.5f, 0.95f), pt(0.5f, 0.30f), strokeWidth = s * 0.13f, cap = StrokeCap.Round)
++                arrowHead(pt(0.5f, 0.06f), 0f, -1f, s * 0.24f, color)
++            }
++        }
++    }
++}
++
++/** tip 위치에서 (dx, dy) 방향을 가리키는 채워진 삼각형 화살촉 */
++private fun DrawScope.arrowHead(tip: Offset, dx: Float, dy: Float, length: Float, color: Color) {
++    val len = hypot(dx, dy).takeIf { it > 0f } ?: 1f
++    val ux = dx / len
++    val uy = dy / len
++    val base = Offset(tip.x - ux * length, tip.y - uy * length)
++    val half = length * 0.78f
++    val path = Path().apply {
++        moveTo(tip.x, tip.y)
++        lineTo(base.x - uy * half, base.y + ux * half)
++        lineTo(base.x + uy * half, base.y - ux * half)
++        close()
++    }
++    drawPath(path, color)
++}
++
++/** 거리 표시: 1km 미만은 m(100m 이상은 10m 단위), 이상은 km 소수 한 자리 */
++private fun formatDistance(meters: Int): Pair<String, String> = when {
++    meters >= 10_000 -> Pair("${(meters / 1000.0).roundToInt()}", "km")
++    meters >= 1000 -> Pair(String.format(Locale.KOREA, "%.1f", meters / 1000.0), "km")
++    meters >= 100 -> Pair("${(meters / 10.0).roundToInt() * 10}", "m")
++    else -> Pair("${meters.coerceAtLeast(0)}", "m")
++}
+diff --git a/app/src/main/java/com/example/bicyclesafety/KakaoRouteRepository.java b/app/src/main/java/com/example/bicyclesafety/KakaoRouteRepository.java
+index 7d05c5c..60f7afa 100755
+--- a/app/src/main/java/com/example/bicyclesafety/KakaoRouteRepository.java
++++ b/app/src/main/java/com/example/bicyclesafety/KakaoRouteRepository.java
+@@ -41,11 +41,18 @@ public final class KakaoRouteRepository {
+         public final String guidance;
+         public final double latitude;
+         public final double longitude;
++        /** 카카오 응답의 안내 종류 코드(없으면 -1). 화살표는 안내 문구로 판별합니다. */
++        public final int type;
+ 
+         public GuideStep(String guidance, double latitude, double longitude) {
++            this(guidance, latitude, longitude, -1);
++        }
++
++        public GuideStep(String guidance, double latitude, double longitude, int type) {
+             this.guidance = guidance;
+             this.latitude = latitude;
+             this.longitude = longitude;
++            this.type = type;
+         }
+     }
+ 
+@@ -56,16 +63,26 @@ public final class KakaoRouteRepository {
+         public final String matchedDestination;
+         public final List<Point> points;
+         public final List<GuideStep> guideSteps;
++        /** 내비게이션 화면 하단과 재탐색에 쓰는 도착지 정보 */
++        public final String destinationName;
++        public final double endLatitude;
++        public final double endLongitude;
++        public final boolean bicycleFirst;
+ 
+         Result(int distanceMeters, int durationSeconds, String matchedOrigin,
+                String matchedDestination, List<Point> points,
+-               List<GuideStep> guideSteps) {
++               List<GuideStep> guideSteps, String destinationName,
++               double endLatitude, double endLongitude, boolean bicycleFirst) {
+             this.distanceMeters = distanceMeters;
+             this.durationSeconds = durationSeconds;
+             this.matchedOrigin = matchedOrigin;
+             this.matchedDestination = matchedDestination;
+             this.points = Collections.unmodifiableList(new ArrayList<>(points));
+             this.guideSteps = Collections.unmodifiableList(new ArrayList<>(guideSteps));
++            this.destinationName = destinationName;
++            this.endLatitude = endLatitude;
++            this.endLongitude = endLongitude;
++            this.bicycleFirst = bicycleFirst;
+         }
+     }
+ 
+@@ -94,6 +111,29 @@ public final class KakaoRouteRepository {
+         // Prototype: use top ranked search result. Add explicit place selection before release.
+         Place start = searchFirstPlace(key, origin);
+         Place end = searchFirstPlace(key, destination);
++        return requestRoute(key, start, end, bicycleFirst);
++    }
++
++    /**
++     * 안내 중 경로를 벗어났을 때 현재 위치에서 같은 도착지로 다시 찾습니다.
++     * 장소 검색 없이 자전거 경로 API 한 번만 호출합니다.
++     */
++    public static Result rerouteFrom(String key, double latitude, double longitude,
++                                     Result previous) throws IOException, JSONException {
++        if (key == null || key.trim().isEmpty()) {
++            throw new IOException("REST API 키가 설정되지 않았습니다. local.properties를 확인하세요.");
++        }
++        Place start = new Place("현재 위치", "", longitude, latitude);
++        Place end = new Place(previous.destinationName, "", previous.endLongitude, previous.endLatitude);
++        Result result = requestRoute(key, start, end, previous.bicycleFirst);
++        return new Result(result.distanceMeters, result.durationSeconds, "현재 위치",
++                previous.matchedDestination, result.points, result.guideSteps,
++                previous.destinationName, previous.endLatitude, previous.endLongitude,
++                previous.bicycleFirst);
++    }
++
++    private static Result requestRoute(String key, Place start, Place end,
++                                       boolean bicycleFirst) throws IOException, JSONException {
+         String params = "?start_x=" + start.longitude
+                 + "&start_y=" + start.latitude
+                 + "&end_x=" + end.longitude
+@@ -135,7 +175,8 @@ public final class KakaoRouteRepository {
+                     double latitude = stepProps.optDouble("y", Double.NaN);
+ 
+                     if (!guidance.isEmpty() && isValidCoordinate(latitude, longitude)) {
+-                        guideSteps.add(new GuideStep(guidance, latitude, longitude));
++                        guideSteps.add(new GuideStep(guidance, latitude, longitude,
++                                stepProps.optInt("type", -1)));
+                     }
+                 }
+                 JSONObject path = step.optJSONObject("path");
+@@ -162,7 +203,8 @@ public final class KakaoRouteRepository {
+         JSONObject properties = route.optJSONObject("properties");
+         int meters = properties != null ? properties.optInt("totalDistance", legDistance) : legDistance;
+         int seconds = properties != null ? properties.optInt("totalTime", legTime) : legTime;
+-        return new Result(meters, seconds, start.displayName(), end.displayName(), points, guideSteps);
++        return new Result(meters, seconds, start.displayName(), end.displayName(), points, guideSteps,
++                end.name, end.latitude, end.longitude, bicycleFirst);
+     }
+ 
+     private static boolean isValidCoordinate(double lat, double lng) {
+diff --git a/app/src/main/java/com/example/bicyclesafety/MainActivity.java b/app/src/main/java/com/example/bicyclesafety/MainActivity.java
+index 1514317..608c0ff 100755
+--- a/app/src/main/java/com/example/bicyclesafety/MainActivity.java
++++ b/app/src/main/java/com/example/bicyclesafety/MainActivity.java
+@@ -18,6 +18,7 @@ import java.util.Comparator;
+ import android.os.Bundle;
+ import android.util.Log;
+ import android.view.View;
++import android.view.WindowManager;
+ import android.widget.Toast;
+ 
+ import androidx.appcompat.app.AppCompatActivity;
+@@ -75,7 +76,16 @@ public class MainActivity extends AppCompatActivity {
+     private TextToSpeech textToSpeech;
+     private boolean ttsReady = false;
+     private boolean guidanceActive = false;
+-    private int nextGuideStep = 0;
++    // ── 내비게이션 화면 상태 ──
++    private NavigationTracker navTracker;
++    private int lastPreAnnouncedStep = -1;   // "150미터 앞에서 ~" 안내를 한 단계
++    private int lastSpokenStep = -1;         // 회전 직전 안내를 한 단계
++    private int offRouteCount = 0;           // 연속으로 경로를 벗어난 위치 수
++    private long lastRerouteAt = 0;
++    private boolean rerouting = false;
++    private Location previousNavLocation;
++    private static final double OFF_ROUTE_METERS = 40.0;
++    private static final int NAV_ZOOM = 17;
+     private final Map<String, Long> warningHistory = new HashMap<>();
+     private static final int LOCATION_REQUEST = 501;
+     private static final double WARNING_DISTANCE_METERS = 150.0;
+@@ -317,8 +327,7 @@ public class MainActivity extends AppCompatActivity {
+         routeRequestInProgress = false;
+         pendingRoute = null;
+         routeHazardsVisible.clear();
+-        guidanceActive = false;
+-        nextGuideStep = 0;
++        if (guidanceActive) stopGuidance(null);
+         if (routeLayer != null) routeLayer.removeAll();
+         refreshHazardMarkers(null);
+         BikeUiBridge.routeCleared();
+@@ -403,6 +412,11 @@ public class MainActivity extends AppCompatActivity {
+ 
+     /** RouteLine 레이어만 갱신: 사고 마커는 Label 레이어에 따로 유지됩니다. */
+     private boolean showRouteOnMap(KakaoRouteRepository.Result result) {
++        return showRouteOnMap(result, true);
++    }
++
++    /** @param fitCamera false면 안내 중 재탐색처럼 카메라를 현재 위치에 둔 채 선만 바꿉니다. */
++    private boolean showRouteOnMap(KakaoRouteRepository.Result result, boolean fitCamera) {
+         // Map loading is asynchronous: keep the result until onMapReady() calls us.
+         if (activeMap == null || routeLayer == null) return true;
+         List<LatLng> points = new ArrayList<>();
+@@ -427,10 +441,12 @@ public class MainActivity extends AppCompatActivity {
+                     .setStyles(styles.getStyles(0));
+             routeLayer.addRouteLine(RouteLineOptions.from(segment).setStylesSet(styles));
+             // Show the entire result after the sheet is closed. Include map padding.
+-            LatLng southWest = LatLng.from(minLat, minLng);
+-            LatLng northEast = LatLng.from(maxLat, maxLng);
+-            activeMap.moveCamera(CameraUpdateFactory.fitMapPoints(
+-                    new LatLng[]{southWest, northEast}, 110));
++            if (fitCamera) {
++                LatLng southWest = LatLng.from(minLat, minLng);
++                LatLng northEast = LatLng.from(maxLat, maxLng);
++                activeMap.moveCamera(CameraUpdateFactory.fitMapPoints(
++                        new LatLng[]{southWest, northEast}, 110));
++            }
+             return true;
+         } catch (Exception error) {
+             Log.e(TAG, "경로선 표시 오류", error);
+@@ -494,7 +510,9 @@ public class MainActivity extends AppCompatActivity {
+                 Toast.makeText(this, "기기의 위치 서비스(GPS)를 켜주세요.", Toast.LENGTH_LONG).show();
+                 return;
+             }
+-            locationManager.requestLocationUpdates(provider, 2500L, 5f, locationListener, Looper.getMainLooper());
++            // 길 안내 중에는 1초마다, 평소에는 2.5초·5m마다 위치를 받습니다.
++            locationManager.requestLocationUpdates(provider, guidanceActive ? 1000L : 2500L,
++                    guidanceActive ? 0f : 5f, locationListener, Looper.getMainLooper());
+             Toast.makeText(this, "현재 위치 확인 중 · 에뮬레이터는 위치 설정으로 테스트", Toast.LENGTH_SHORT).show();
+         } catch (SecurityException error) {
+             Toast.makeText(this, "위치 권한을 다시 확인해 주세요.", Toast.LENGTH_LONG).show();
+@@ -520,6 +538,7 @@ public class MainActivity extends AppCompatActivity {
+                 centerOnNextLocation = false;
+             }
+         }
++        if (guidanceActive) updateNavigation(location);
+         // 정확도가 확인되고 오차 80m 이하인 좌표에만 시연용 근접 경고를 적용합니다.
+         if (!location.hasAccuracy() || location.getAccuracy() > 80f) {
+             BikeUiBridge.showProximityWarning("GPS 정확도를 확인할 수 없거나 오차가 커서 위험 접근 판별을 보류했습니다.");
+@@ -543,13 +562,6 @@ public class MainActivity extends AppCompatActivity {
+         } else {
+             BikeUiBridge.showProximityWarning(null);
+         }
+-        if (guidanceActive && pendingRoute != null && nextGuideStep < pendingRoute.guideSteps.size()) {
+-            KakaoRouteRepository.GuideStep step = pendingRoute.guideSteps.get(nextGuideStep);
+-            if (distanceMeters(location.getLatitude(),location.getLongitude(),step.latitude,step.longitude) < 55) {
+-                speak(step.guidance);
+-                nextGuideStep++;
+-            }
+-        }
+     }
+ 
+     private void drawCurrentLocation(Location location) {
+@@ -567,18 +579,25 @@ public class MainActivity extends AppCompatActivity {
+ 
+     /** 사용자가 현재 위치 버튼을 누른 경우에만 지도 중심 이동; 안내 중 지도 자동 추적 아님. */
+     private void moveCameraToLocation(Location location) {
++        moveCameraToLocation(location, 15);
++    }
++
++    private void moveCameraToLocation(Location location, int zoomLevel) {
+         if (activeMap == null) return;
+         try {
+             activeMap.moveCamera(CameraUpdateFactory.newCenterPosition(
+-                    LatLng.from(location.getLatitude(), location.getLongitude()), 15));
++                    LatLng.from(location.getLatitude(), location.getLongitude()), zoomLevel));
+         } catch (Exception error) {
+             Log.w(TAG, "현재 위치로 지도 이동 실패", error);
+         }
+     }
+ 
+-    /** 안내 시작: 첫 문구 TTS + 현재 위치 추적. 전체 내비게이션 엔진이 아닌 기능 시연용. */
++    /**
++     * 안내 시작: 내비게이션 화면으로 전환하고 현재 위치를 1초마다 추적합니다.
++     * 회전 안내·남은 거리·도착 판단은 NavigationTracker가 계산합니다. (시연용, 실도로 내비 아님)
++     */
+     public void onStartGuidanceRequested() {
+-        if (pendingRoute == null || pendingRoute.guideSteps.isEmpty()) {
++        if (pendingRoute == null || pendingRoute.points.size() < 2) {
+             Toast.makeText(this, "먼저 경로를 분석해 주세요.", Toast.LENGTH_SHORT).show();
+             return;
+         }
+@@ -589,10 +608,192 @@ public class MainActivity extends AppCompatActivity {
+             return;
+         }
+         guidanceActive = true;
+-        nextGuideStep = 1;
+-        speak("자전거 경로 안내를 시작합니다. " + pendingRoute.guideSteps.get(0).guidance);
++        navTracker = new NavigationTracker(pendingRoute.points, pendingRoute.guideSteps);
++        resetNavAnnouncements();
++        offRouteCount = 0;
++        rerouting = false;
++        previousNavLocation = null;
++        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
++        BikeUiBridge.navStarted(pendingRoute.destinationName, pendingRoute.durationSeconds,
++                pendingRoute.distanceMeters, hazardFractions());
++        BikeUiBridge.navMessage("경로 안내를 시작합니다.");
++        speak("자전거 경로 안내를 시작합니다. "
++                + (pendingRoute.guideSteps.isEmpty() ? "" : pendingRoute.guideSteps.get(0).guidance));
+         trackingLocation = true;
++        centerOnNextLocation = false;
+         startLocationUpdates();
++        if (lastLocation != null) updateNavigation(lastLocation);
++    }
++
++    /** 내비게이션 화면의 종료 버튼 */
++    public void onEndGuidanceRequested() {
++        if (guidanceActive) stopGuidance("경로 안내를 종료합니다.");
++    }
++
++    /** 내비게이션 화면의 재탐색 버튼 */
++    public void onRerouteRequested() {
++        if (!guidanceActive) return;
++        if (lastLocation == null) {
++            BikeUiBridge.navMessage("현재 위치를 확인하는 중입니다.");
++            return;
++        }
++        requestReroute(lastLocation, false);
++    }
++
++    private void stopGuidance(String spoken) {
++        guidanceActive = false;
++        navTracker = null;
++        rerouting = false;
++        offRouteCount = 0;
++        previousNavLocation = null;
++        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
++        BikeUiBridge.navEnded();
++        if (spoken != null) speak(spoken);
++        // 안내가 끝나면 전체 경로가 보이게 되돌리고, 위치 갱신 간격도 평소대로
++        if (pendingRoute != null) showRouteOnMap(pendingRoute, true);
++        if (trackingLocation && hasLocationPermission()) startLocationUpdates();
++    }
++
++    private void resetNavAnnouncements() {
++        lastPreAnnouncedStep = -1;
++        lastSpokenStep = -1;
++    }
++
++    /** 경로 주변 사고다발지역의 경로상 위치 (오른쪽 진행 막대 표시용, 0~1) */
++    private float[] hazardFractions() {
++        if (navTracker == null) return new float[0];
++        float[] result = new float[routeHazardsVisible.size()];
++        for (int i = 0; i < result.length; i++) {
++            RiskPoint p = routeHazardsVisible.get(i);
++            result[i] = (float) navTracker.fractionAlong(p.latitude, p.longitude);
++        }
++        return result;
++    }
++
++    private void updateNavigation(Location location) {
++        if (navTracker == null || pendingRoute == null) return;
++        moveCameraToLocation(location, NAV_ZOOM);
++        NavigationTracker.Snapshot snap = navTracker.update(location.getLatitude(), location.getLongitude());
++        boolean accurate = location.hasAccuracy() && location.getAccuracy() <= 35f;
++        boolean offRoute = accurate && snap.offRouteMeters > OFF_ROUTE_METERS;
++
++        if (snap.arrived && !offRoute) {
++            stopGuidance("목적지에 도착했습니다. 경로 안내를 종료합니다.");
++            Toast.makeText(this, "목적지에 도착했습니다.", Toast.LENGTH_LONG).show();
++            return;
++        }
++        // GPS 튐을 피하려고 3번 연속 벗어났을 때만 자동 재탐색 (15초 간격)
++        offRouteCount = offRoute ? offRouteCount + 1 : 0;
++        if (offRouteCount >= 3 && !rerouting
++                && SystemClock.elapsedRealtime() - lastRerouteAt > 15000) {
++            requestReroute(location, true);
++        }
++
++        List<KakaoRouteRepository.GuideStep> steps = navTracker.getSteps();
++        NavigationTracker.Maneuver maneuver = NavigationTracker.Maneuver.ARRIVE;
++        String instruction = "목적지까지 이동";
++        if (snap.nextStepIndex >= 0) {
++            instruction = steps.get(snap.nextStepIndex).guidance;
++            maneuver = NavigationTracker.maneuverOf(instruction);
++        }
++        String following = null;
++        if (snap.followingStepIndex >= 0) {
++            following = NavigationTracker.maneuverOf(steps.get(snap.followingStepIndex).guidance).name();
++        }
++        double total = Math.max(1.0, navTracker.getTotalMeters());
++        int remainingSeconds = (int) Math.round(pendingRoute.durationSeconds * (snap.remainingMeters / total));
++        BikeUiBridge.navProgress(maneuver.name(), NavigationTracker.labelOf(maneuver), instruction,
++                (int) Math.round(snap.distanceToNext), following, (int) Math.round(snap.followingDistance),
++                (int) Math.round(snap.remainingMeters), remainingSeconds, speedKmh(location),
++                (float) snap.progress, offRoute);
++        announceGuidance(snap, steps);
++        previousNavLocation = new Location(location);
++    }
++
++    /** 회전 150m 전 예고 1번 + 30m 전 1번. 같은 문구를 반복하지 않습니다. */
++    private void announceGuidance(NavigationTracker.Snapshot snap,
++                                  List<KakaoRouteRepository.GuideStep> steps) {
++        if (snap.nextStepIndex < 0 || rerouting) return;
++        int index = snap.nextStepIndex;
++        String guidance = steps.get(index).guidance;
++        double d = snap.distanceToNext;
++        if (d <= 35 && lastSpokenStep != index) {
++            lastSpokenStep = index;
++            lastPreAnnouncedStep = index;
++            speakQueued(guidance);
++        } else if (d > 60 && d <= 160 && lastPreAnnouncedStep != index) {
++            lastPreAnnouncedStep = index;
++            long rounded = Math.round(d / 10.0) * 10;
++            speakQueued(rounded + "미터 앞에서 " + guidance);
++        }
++    }
++
++    private int speedKmh(Location location) {
++        if (location.hasSpeed()) return Math.max(0, Math.round(location.getSpeed() * 3.6f));
++        if (previousNavLocation == null) return -1;
++        long dtMs = location.getTime() - previousNavLocation.getTime();
++        if (dtMs <= 0) return -1;
++        double kmh = previousNavLocation.distanceTo(location) / (dtMs / 1000.0) * 3.6;
++        return kmh > 80 ? -1 : (int) Math.round(kmh);
++    }
++
++    /** 경로를 벗어났을 때 현재 위치에서 같은 도착지로 다시 찾습니다. */
++    private void requestReroute(Location from, boolean automatic) {
++        if (rerouting || pendingRoute == null) return;
++        if (BuildConfig.KAKAO_REST_API_KEY.isEmpty()) {
++            BikeUiBridge.navMessage("REST API 키가 없어 재탐색할 수 없습니다.");
++            return;
++        }
++        rerouting = true;
++        lastRerouteAt = SystemClock.elapsedRealtime();
++        BikeUiBridge.navRerouting(true);
++        if (automatic) speakQueued("경로를 벗어났습니다. 경로를 다시 탐색합니다.");
++        final KakaoRouteRepository.Result previous = pendingRoute;
++        final double lat = from.getLatitude();
++        final double lng = from.getLongitude();
++        final int revision = routeRequestRevision;
++        final List<RiskPoint> currentHazards = new ArrayList<>(hazardPoints);
++        routeWorker.execute(() -> {
++            try {
++                KakaoRouteRepository.Result result = KakaoRouteRepository.rerouteFrom(
++                        BuildConfig.KAKAO_REST_API_KEY, lat, lng, previous);
++                List<RiskPoint> nearby = new ArrayList<>();
++                for (RiskPoint hazard : currentHazards) {
++                    if (distanceToRoute(hazard, result.points) <= ROUTE_HAZARD_METERS) nearby.add(hazard);
++                }
++                runOnUiThread(() -> {
++                    rerouting = false;
++                    BikeUiBridge.navRerouting(false);
++                    if (isDestroyed() || revision != routeRequestRevision || !guidanceActive) return;
++                    offRouteCount = 0;
++                    pendingRoute = result;
++                    routeHazardsVisible.clear();
++                    routeHazardsVisible.addAll(nearby);
++                    refreshHazardMarkers(routeHazardsVisible);
++                    showRouteOnMap(result, false);
++                    navTracker = new NavigationTracker(result.points, result.guideSteps);
++                    resetNavAnnouncements();
++                    BikeUiBridge.navRouteReplaced(result.durationSeconds, result.distanceMeters, hazardFractions());
++                    BikeUiBridge.navMessage("새 경로로 안내합니다.");
++                    if (lastLocation != null) updateNavigation(lastLocation);
++                });
++            } catch (Exception error) {
++                Log.w(TAG, "경로 재탐색 실패", error);
++                runOnUiThread(() -> {
++                    rerouting = false;
++                    BikeUiBridge.navRerouting(false);
++                    if (isDestroyed() || !guidanceActive) return;
++                    BikeUiBridge.navMessage("재탐색 실패 · 네트워크를 확인해 주세요.");
++                });
++            }
++        });
++    }
++
++    /** 길 안내 문구는 앞 안내를 끊지 않고 이어서 읽습니다. */
++    private void speakQueued(String message) {
++        if (ttsReady && textToSpeech != null) {
++            textToSpeech.speak(message, TextToSpeech.QUEUE_ADD, null, "nav_" + SystemClock.uptimeMillis());
++        }
+     }
+ 
+     private void speak(String message) {
+diff --git a/app/src/main/java/com/example/bicyclesafety/NavigationTracker.java b/app/src/main/java/com/example/bicyclesafety/NavigationTracker.java
+new file mode 100644
+index 0000000..0aff92d
+--- /dev/null
++++ b/app/src/main/java/com/example/bicyclesafety/NavigationTracker.java
+@@ -0,0 +1,204 @@
++package com.example.bicyclesafety;
++
++import java.util.ArrayList;
++import java.util.List;
++
++/**
++ * 자전거 길 안내 계산기 (Android 의존성 없음).
++ * 현재 위치를 경로선 위에 투영해서 다음 회전까지 거리, 남은 거리, 경로 이탈 여부를 계산합니다.
++ * 내비게이션 화면(BikeUiBridge.navProgress)과 TTS 안내 시점 판단에 사용합니다.
++ */
++public final class NavigationTracker {
++
++    /** 화면 화살표 종류. Kotlin 화면에서 name()으로 받습니다. */
++    public enum Maneuver { START, STRAIGHT, LEFT, RIGHT, SLIGHT_LEFT, SLIGHT_RIGHT, UTURN, ARRIVE }
++
++    /** 한 번의 위치 갱신 결과 */
++    public static final class Snapshot {
++        /** 다음 안내 단계 번호 (없으면 -1) */
++        public int nextStepIndex = -1;
++        /** 다음 안내 지점까지 경로를 따라 남은 거리 (m) */
++        public double distanceToNext;
++        /** 그다음 안내 단계 번호 (없으면 -1) */
++        public int followingStepIndex = -1;
++        /** 다음 안내 지점에서 그다음 안내 지점까지 거리 (m) */
++        public double followingDistance;
++        /** 목적지까지 남은 거리 (m) */
++        public double remainingMeters;
++        /** 경로선에서 떨어진 거리 (m) */
++        public double offRouteMeters;
++        /** 진행률 0~1 */
++        public double progress;
++        public boolean arrived;
++    }
++
++    private static final double EARTH_M_PER_DEG = 111320.0;
++    /** 같은 거리 후보 중 이전 위치와 가까운 구간을 고르는 허용 오차 (되돌아오는 길 대비) */
++    private static final double TIE_METERS = 12.0;
++    /** 목적지 도착 판정 거리 */
++    public static final double ARRIVE_METERS = 25.0;
++
++    private final double[] lats;
++    private final double[] lngs;
++    /** 각 경로 좌표까지 누적 거리 */
++    private final double[] cumulative;
++    private final double totalMeters;
++    private final List<KakaoRouteRepository.GuideStep> steps;
++    /** 각 안내 지점의 경로상 위치 (출발점부터 거리) */
++    private final double[] stepAlong;
++    private double lastAlong = 0;
++
++    public NavigationTracker(List<KakaoRouteRepository.Point> points,
++                             List<KakaoRouteRepository.GuideStep> guideSteps) {
++        int n = points.size();
++        lats = new double[n];
++        lngs = new double[n];
++        cumulative = new double[n];
++        for (int i = 0; i < n; i++) {
++            lats[i] = points.get(i).latitude;
++            lngs[i] = points.get(i).longitude;
++            if (i > 0) cumulative[i] = cumulative[i - 1] + distance(lats[i - 1], lngs[i - 1], lats[i], lngs[i]);
++        }
++        totalMeters = n == 0 ? 0 : cumulative[n - 1];
++        steps = new ArrayList<>(guideSteps);
++        stepAlong = new double[steps.size()];
++        // 안내 지점은 경로 순서대로 놓이도록 앞 지점 이후 구간에서만 찾습니다.
++        int fromSegment = 0;
++        for (int i = 0; i < steps.size(); i++) {
++            KakaoRouteRepository.GuideStep step = steps.get(i);
++            double[] p = project(step.latitude, step.longitude, fromSegment, Double.NaN);
++            stepAlong[i] = p[1];
++            fromSegment = (int) p[2];
++        }
++    }
++
++    public double getTotalMeters() { return totalMeters; }
++
++    public List<KakaoRouteRepository.GuideStep> getSteps() { return steps; }
++
++    /** 임의 좌표(예: 사고다발지역)의 경로상 위치를 0~1 비율로 돌려줍니다. */
++    public double fractionAlong(double latitude, double longitude) {
++        if (totalMeters <= 0) return 0;
++        return clamp(project(latitude, longitude, 0, Double.NaN)[1] / totalMeters, 0, 1);
++    }
++
++    public Snapshot update(double latitude, double longitude) {
++        Snapshot s = new Snapshot();
++        if (lats.length < 2) {
++            s.arrived = true;
++            return s;
++        }
++        double[] p = project(latitude, longitude, 0, lastAlong);
++        double along = p[1];
++        lastAlong = along;
++        s.offRouteMeters = p[0];
++        s.remainingMeters = Math.max(0, totalMeters - along);
++        s.progress = totalMeters <= 0 ? 1 : clamp(along / totalMeters, 0, 1);
++        double toEnd = distance(latitude, longitude, lats[lats.length - 1], lngs[lngs.length - 1]);
++        s.arrived = s.remainingMeters <= ARRIVE_METERS || toEnd <= ARRIVE_METERS;
++
++        // 현재 위치보다 앞에 있는 첫 안내 지점 (출발 안내는 건너뜀)
++        for (int i = 0; i < steps.size(); i++) {
++            if (maneuverOf(steps.get(i).guidance) == Maneuver.START) continue;
++            if (stepAlong[i] > along + 3) {
++                s.nextStepIndex = i;
++                s.distanceToNext = stepAlong[i] - along;
++                break;
++            }
++        }
++        if (s.nextStepIndex < 0) {
++            // 남은 안내가 없으면 목적지까지 직진 안내
++            s.distanceToNext = s.remainingMeters;
++        } else {
++            for (int j = s.nextStepIndex + 1; j < steps.size(); j++) {
++                if (stepAlong[j] > stepAlong[s.nextStepIndex] + 3) {
++                    s.followingStepIndex = j;
++                    s.followingDistance = stepAlong[j] - stepAlong[s.nextStepIndex];
++                    break;
++                }
++            }
++        }
++        return s;
++    }
++
++    /**
++     * 안내 문구로 화살표 종류를 고릅니다. 카카오 자전거 경로의 guidance 문구 기준
++     * (예: "좌회전", "오른쪽 방향", "2시 방향", "유턴", "목적지").
++     */
++    public static Maneuver maneuverOf(String guidance) {
++        String g = guidance == null ? "" : guidance.replace(" ", "");
++        if (g.contains("목적지") || g.contains("도착")) return Maneuver.ARRIVE;
++        if (g.contains("출발")) return Maneuver.START;
++        if (g.contains("유턴") || g.contains("회전교차로6시")) return Maneuver.UTURN;
++        if (g.contains("12시")) return Maneuver.STRAIGHT;
++        if (g.contains("10시") || g.contains("11시")) return Maneuver.SLIGHT_LEFT;
++        if (g.contains("1시") || g.contains("2시")) return Maneuver.SLIGHT_RIGHT;
++        if (g.contains("좌회전") || g.contains("왼쪽") || g.contains("좌측") || g.contains("9시")) return Maneuver.LEFT;
++        if (g.contains("우회전") || g.contains("오른쪽") || g.contains("우측") || g.contains("3시")) return Maneuver.RIGHT;
++        return Maneuver.STRAIGHT;
++    }
++
++    /** 화면 큰 글씨에 쓰는 짧은 안내 */
++    public static String labelOf(Maneuver maneuver) {
++        switch (maneuver) {
++            case LEFT: return "좌회전";
++            case RIGHT: return "우회전";
++            case SLIGHT_LEFT: return "왼쪽 방향";
++            case SLIGHT_RIGHT: return "오른쪽 방향";
++            case UTURN: return "유턴";
++            case ARRIVE: return "목적지";
++            case START: return "출발";
++            default: return "직진";
++        }
++    }
++
++    /**
++     * 좌표를 경로선에 투영합니다.
++     * @param fromSegment 이 구간부터 찾기
++     * @param preferAlong NaN이 아니면 거리가 비슷한 후보 중 이 위치와 가까운 구간을 고름
++     * @return {경로선까지 거리, 출발점부터 경로상 거리, 구간 번호}
++     */
++    private double[] project(double lat, double lng, int fromSegment, double preferAlong) {
++        double best = Double.POSITIVE_INFINITY;
++        double[] dists = new double[lats.length];
++        double[] alongs = new double[lats.length];
++        int start = Math.max(1, fromSegment);
++        double scaleX = EARTH_M_PER_DEG * Math.cos(Math.toRadians(lat));
++        for (int i = start; i < lats.length; i++) {
++            double ax = (lngs[i - 1] - lng) * scaleX;
++            double ay = (lats[i - 1] - lat) * EARTH_M_PER_DEG;
++            double bx = (lngs[i] - lng) * scaleX;
++            double by = (lats[i] - lat) * EARTH_M_PER_DEG;
++            double vx = bx - ax, vy = by - ay;
++            double len2 = vx * vx + vy * vy;
++            double t = len2 < 0.0001 ? 0 : clamp(-(ax * vx + ay * vy) / len2, 0, 1);
++            dists[i] = Math.hypot(ax + t * vx, ay + t * vy);
++            alongs[i] = cumulative[i - 1] + t * (cumulative[i] - cumulative[i - 1]);
++            if (dists[i] < best) best = dists[i];
++        }
++        int chosen = -1;
++        double chosenScore = Double.POSITIVE_INFINITY;
++        for (int i = start; i < lats.length; i++) {
++            if (dists[i] > best + TIE_METERS) continue;
++            double score = Double.isNaN(preferAlong) ? dists[i] : Math.abs(alongs[i] - preferAlong);
++            if (score < chosenScore) {
++                chosenScore = score;
++                chosen = i;
++            }
++        }
++        if (chosen < 0) return new double[]{best, lastAlong, start};
++        return new double[]{dists[chosen], alongs[chosen], chosen};
++    }
++
++    static double distance(double lat1, double lng1, double lat2, double lng2) {
++        double dLat = Math.toRadians(lat2 - lat1);
++        double dLng = Math.toRadians(lng2 - lng1);
++        double a = Math.pow(Math.sin(dLat / 2), 2) + Math.cos(Math.toRadians(lat1))
++                * Math.cos(Math.toRadians(lat2)) * Math.pow(Math.sin(dLng / 2), 2);
++        return 6371000.0 * 2.0 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
++    }
++
++    private static double clamp(double v, double min, double max) {
++        return Math.max(min, Math.min(max, v));
++    }
++}
