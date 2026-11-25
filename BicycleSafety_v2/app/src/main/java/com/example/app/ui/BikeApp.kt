@@ -49,6 +49,10 @@ fun BikeApp(
     routeUiState: RouteUiState,
     onStartGuidance: () -> Unit,
     proximityWarning: String?,
+    navUiState: NavUiState = NavUiState(),
+    onEndGuidance: () -> Unit = {},
+    onReroute: () -> Unit = {},
+    onClearRoute: () -> Unit = {},
     loadInitialData: suspend () -> Unit = { delay(1500) },
 ) {
     var dataReady by remember { mutableStateOf(false) }
@@ -95,6 +99,10 @@ fun BikeApp(
                     routeUiState = routeUiState,
                     onStartGuidance = onStartGuidance,
                     proximityWarning = proximityWarning,
+                    navUiState = navUiState,
+                    onEndGuidance = onEndGuidance,
+                    onReroute = onReroute,
+                    onClearRoute = onClearRoute,
                 )
             } else {
                 BikeLoadingScreen(isLoading = !dataReady, onFinished = { showMain = true })

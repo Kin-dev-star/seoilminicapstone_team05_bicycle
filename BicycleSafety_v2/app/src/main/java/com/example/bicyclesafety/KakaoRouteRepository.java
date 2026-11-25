@@ -41,11 +41,18 @@ public final class KakaoRouteRepository {
         public final String guidance;
         public final double latitude;
         public final double longitude;
+        /** 카카오 응답의 안내 종류 코드(없으면 -1). 화살표는 안내 문구로 판별합니다. */
+        public final int type;
 
         public GuideStep(String guidance, double latitude, double longitude) {
+            this(guidance, latitude, longitude, -1);
+        }
+
+        public GuideStep(String guidance, double latitude, double longitude, int type) {
             this.guidance = guidance;
             this.latitude = latitude;
             this.longitude = longitude;
+            this.type = type;
         }
     }
 
@@ -56,16 +63,26 @@ public final class KakaoRouteRepository {
         public final String matchedDestination;
         public final List<Point> points;
         public final List<GuideStep> guideSteps;
+        /** 내비게이션 화면 하단과 재탐색에 쓰는 도착지 정보 */
+        public final String destinationName;
+        public final double endLatitude;
+        public final double endLongitude;
+        public final boolean bicycleFirst;
 
         Result(int distanceMeters, int durationSeconds, String matchedOrigin,
                String matchedDestination, List<Point> points,
-               List<GuideStep> guideSteps) {
+               List<GuideStep> guideSteps, String destinationName,
+               double endLatitude, double endLongitude, boolean bicycleFirst) {
             this.distanceMeters = distanceMeters;
             this.durationSeconds = durationSeconds;
             this.matchedOrigin = matchedOrigin;
             this.matchedDestination = matchedDestination;
             this.points = Collections.unmodifiableList(new ArrayList<>(points));
             this.guideSteps = Collections.unmodifiableList(new ArrayList<>(guideSteps));
+            this.destinationName = destinationName;
+            this.endLatitude = endLatitude;
+            this.endLongitude = endLongitude;
+            this.bicycleFirst = bicycleFirst;
         }
     }
 
@@ -94,6 +111,29 @@ public final class KakaoRouteRepository {
         // Prototype: use top ranked search result. Add explicit place selection before release.
         Place start = searchFirstPlace(key, origin);
         Place end = searchFirstPlace(key, destination);
+        return requestRoute(key, start, end, bicycleFirst);
+    }
+
+    /**
+     * 안내 중 경로를 벗어났을 때 현재 위치에서 같은 도착지로 다시 찾습니다.
+     * 장소 검색 없이 자전거 경로 API 한 번만 호출합니다.
+     */
+    public static Result rerouteFrom(String key, double latitude, double longitude,
+                                     Result previous) throws IOException, JSONException {
+        if (key == null || key.trim().isEmpty()) {
+            throw new IOException("REST API 키가 설정되지 않았습니다. local.properties를 확인하세요.");
+        }
+        Place start = new Place("현재 위치", "", longitude, latitude);
+        Place end = new Place(previous.destinationName, "", previous.endLongitude, previous.endLatitude);
+        Result result = requestRoute(key, start, end, previous.bicycleFirst);
+        return new Result(result.distanceMeters, result.durationSeconds, "현재 위치",
+                previous.matchedDestination, result.points, result.guideSteps,
+                previous.destinationName, previous.endLatitude, previous.endLongitude,
+                previous.bicycleFirst);
+    }
+
+    private static Result requestRoute(String key, Place start, Place end,
+                                       boolean bicycleFirst) throws IOException, JSONException {
         String params = "?start_x=" + start.longitude
                 + "&start_y=" + start.latitude
                 + "&end_x=" + end.longitude
@@ -135,7 +175,8 @@ public final class KakaoRouteRepository {
                     double latitude = stepProps.optDouble("y", Double.NaN);
 
                     if (!guidance.isEmpty() && isValidCoordinate(latitude, longitude)) {
-                        guideSteps.add(new GuideStep(guidance, latitude, longitude));
+                        guideSteps.add(new GuideStep(guidance, latitude, longitude,
+                                stepProps.optInt("type", -1)));
                     }
                 }
                 JSONObject path = step.optJSONObject("path");
@@ -162,7 +203,8 @@ public final class KakaoRouteRepository {
         JSONObject properties = route.optJSONObject("properties");
         int meters = properties != null ? properties.optInt("totalDistance", legDistance) : legDistance;
         int seconds = properties != null ? properties.optInt("totalTime", legTime) : legTime;
-        return new Result(meters, seconds, start.displayName(), end.displayName(), points, guideSteps);
+        return new Result(meters, seconds, start.displayName(), end.displayName(), points, guideSteps,
+                end.name, end.latitude, end.longitude, bicycleFirst);
     }
 
     private static boolean isValidCoordinate(double lat, double lng) {
