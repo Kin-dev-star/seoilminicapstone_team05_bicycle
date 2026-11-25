@@ -1,0 +1,2 @@
+package org.json;
+public class JSONObject { public JSONObject(String s) throws JSONException {} public JSONObject optJSONObject(String k){return null;} public JSONArray optJSONArray(String k){return null;} public int optInt(String k,int d){return d;} public String optString(String k,String d){return d;} public String optString(String k){return "";} public double optDouble(String k,double d){return d;} public String getString(String k) throws JSONException {return "";} }
